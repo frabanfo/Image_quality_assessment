@@ -1,5 +1,4 @@
 import os
-import shutil
 import pandas as pd
 import tensorflow as tf
 
@@ -12,83 +11,33 @@ BATCH_SIZE = 16
 RANDOM_STATE = 42
 
 
-def normalize_image_dir(image_dir):
+def build_image_index(image_dir):
     """
-    Restituisce una cartella immagini esistente, tollerando differenze
-    di maiuscole/minuscole come Images/images.
-    """
-
-    if os.path.isdir(image_dir):
-        return image_dir
-
-    parent_dir = os.path.dirname(image_dir) or "."
-    target_name = os.path.basename(image_dir)
-
-    if not os.path.isdir(parent_dir):
-        return image_dir
-
-    for entry in os.listdir(parent_dir):
-        if entry.lower() == target_name.lower():
-            candidate = os.path.join(parent_dir, entry)
-            if os.path.isdir(candidate):
-                return candidate
-
-    return image_dir
-
-
-def flatten_training_images(image_dir):
-    """
-    Copia le immagini presenti in trainingImages dentro image_dir,
-    così i path del dataset puntano sempre alla cartella principale.
+    Scansiona ricorsivamente image_dir e costruisce una mappa:
+    nome_file -> path_completo.
     """
 
-    image_dir = normalize_image_dir(image_dir)
-    training_dir = os.path.join(image_dir, "trainingImages")
+    image_index = {}
+    duplicate_names = set()
 
-    if not os.path.isdir(training_dir):
-        return image_dir
+    for root, _, files in os.walk(image_dir):
+        for file_name in files:
+            file_path = os.path.join(root, file_name)
 
-    copied_files = 0
+            if file_name in image_index:
+                duplicate_names.add(file_name)
+                continue
 
-    for file_name in os.listdir(training_dir):
-        source_path = os.path.join(training_dir, file_name)
-        target_path = os.path.join(image_dir, file_name)
+            image_index[file_name] = file_path
 
-        if not os.path.isfile(source_path):
-            continue
-
-        if os.path.exists(target_path):
-            continue
-
-        shutil.copy2(source_path, target_path)
-        copied_files += 1
-
-    if copied_files > 0:
+    if duplicate_names:
         print(
-            f"Copiate {copied_files} immagini da "
-            f"{training_dir} a {image_dir}."
+            "Attenzione: trovati nomi immagine duplicati nelle "
+            f"sottocartelle. Verrà usata la prima occorrenza per: "
+            f"{sorted(duplicate_names)[:5]}"
         )
 
-    return image_dir
-
-
-def resolve_image_path(image_dir, image_name):
-    """
-    Costruisce il path di un'immagine. Se non è nella root, prova anche
-    nella sottocartella trainingImages.
-    """
-
-    main_path = os.path.join(image_dir, image_name)
-
-    if os.path.exists(main_path):
-        return main_path
-
-    training_path = os.path.join(image_dir, "trainingImages", image_name)
-
-    if os.path.exists(training_path):
-        return training_path
-
-    return main_path
+    return image_dir, image_index
 
 
 def load_image(image_path, mos):
@@ -169,7 +118,7 @@ def prepare_datasets(
     # 1. Caricamento file .mat
     # =========================
 
-    image_dir = flatten_training_images(image_dir)
+    image_dir, image_index = build_image_index(image_dir)
 
     images_mat = loadmat(os.path.join(data_dir, "AllImages_release.mat"))
     mos_mat = loadmat(os.path.join(data_dir, "AllMOS_release.mat"))
@@ -198,9 +147,19 @@ def prepare_datasets(
         "std": std_values
     })
 
-    # Percorso completo delle immagini
-    df["image_path"] = df["image_name"].apply(
-        lambda name: resolve_image_path(image_dir, name)
+    image_index_df = pd.DataFrame(
+        {
+            "image_name": list(image_index.keys()),
+            "image_path": list(image_index.values())
+        }
+    )
+
+    # Associa a ogni immagine il suo path originale nel dataset
+    df = df.merge(image_index_df, on="image_name", how="left")
+
+    missing_mask = df["image_path"].isna()
+    df.loc[missing_mask, "image_path"] = df.loc[missing_mask, "image_name"].apply(
+        lambda name: os.path.join(image_dir, name)
     )
 
     # =========================
