@@ -50,6 +50,8 @@ weights/
 models/
 checkpoints/
 artifacts/
+.keras/
+Splits/
 *.pt
 *.pth
 *.ckpt

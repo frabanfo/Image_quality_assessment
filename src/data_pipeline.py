@@ -1,5 +1,10 @@
 import os
 import pandas as pd
+
+from pathlib import Path
+
+os.environ.setdefault("KERAS_HOME", str(Path(__file__).resolve().parents[1] / ".keras"))
+
 import tensorflow as tf
 
 from scipy.io import loadmat
@@ -9,6 +14,72 @@ from sklearn.model_selection import train_test_split
 IMG_SIZE = 224
 BATCH_SIZE = 16
 RANDOM_STATE = 42
+DATASET_DIR_ENV = "CHALLENGEDB_DIR"
+DEFAULT_DATASET_DIR = "ChallengeDB_release"
+
+
+def load_local_env(env_path=".env"):
+    if DATASET_DIR_ENV in os.environ or not os.path.exists(env_path):
+        return
+
+    with open(env_path, encoding="utf-8") as env_file:
+        for line in env_file:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            if key.strip() == DATASET_DIR_ENV:
+                os.environ[DATASET_DIR_ENV] = value.strip().strip('"').strip("'")
+                return
+
+
+def resolve_dataset_paths(data_dir=None, image_dir=None):
+    """
+    Risolve i path del dataset.
+    """
+    load_local_env()
+    dataset_dir = os.environ.get(DATASET_DIR_ENV, DEFAULT_DATASET_DIR)
+    resolved_data_dir = data_dir or os.path.join(dataset_dir, "Data")
+    resolved_image_dir = image_dir or os.path.join(dataset_dir, "Images")
+
+    return resolved_data_dir, resolved_image_dir
+
+
+def validate_dataset_paths(data_dir, image_dir):
+    required_files = [
+        "AllImages_release.mat",
+        "AllMOS_release.mat",
+        "AllStdDev_release.mat",
+    ]
+    missing_files = [
+        os.path.join(data_dir, file_name)
+        for file_name in required_files
+        if not os.path.exists(os.path.join(data_dir, file_name))
+    ]
+
+    if missing_files or not os.path.isdir(image_dir):
+        message = [
+            "Dataset ChallengeDB non trovato o incompleto.",
+            f"Data dir usata: {data_dir}",
+            f"Images dir usata: {image_dir}",
+            "",
+            "Soluzioni:",
+            f"- metti il dataset in {DEFAULT_DATASET_DIR}/",
+            f"- oppure imposta {DATASET_DIR_ENV} al path locale del dataset",
+            "- oppure passa data_dir e image_dir a prepare_datasets()",
+        ]
+
+        if missing_files:
+            message.append("")
+            message.append("File .mat mancanti:")
+            message.extend(f"- {path}" for path in missing_files)
+
+        if not os.path.isdir(image_dir):
+            message.append("")
+            message.append(f"Cartella immagini mancante: {image_dir}")
+
+        raise FileNotFoundError("\n".join(message))
 
 
 def build_image_index(image_dir):
@@ -53,16 +124,12 @@ def load_image(image_path, mos):
     image = tf.image.decode_image(image, channels=3, expand_animations=False)
 
     image = tf.image.resize(image, [IMG_SIZE, IMG_SIZE])
-
     image = tf.cast(image, tf.float32)
-
-    # Normalizzazione semplice in [0, 1]
-    image = image / 255.0
+    image.set_shape([IMG_SIZE, IMG_SIZE, 3])
 
     mos = tf.cast(mos, tf.float32)
 
     return image, mos
-
 
 def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False):
     """
@@ -97,10 +164,11 @@ def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False):
 
 
 def prepare_datasets(
-    data_dir="dataset/Data",
-    image_dir="dataset/Images",
+    data_dir=None,
+    image_dir=None,
     batch_size=BATCH_SIZE,
-    save_csv=True
+    save_csv=True,
+    split_dir="Splits",
 ):
     """
     Funzione principale.
@@ -109,14 +177,17 @@ def prepare_datasets(
         train_ds, val_ds, test_ds
 
     Inoltre, se save_csv=True, salva anche:
-        dataset/Splits/train.csv
-        dataset/Splits/val.csv
-        dataset/Splits/test.csv
+        Splits/train.csv
+        Splits/val.csv
+        Splits/test.csv
     """
 
     # =========================
     # 1. Caricamento file .mat
     # =========================
+
+    data_dir, image_dir = resolve_dataset_paths(data_dir, image_dir)
+    validate_dataset_paths(data_dir, image_dir)
 
     image_dir, image_index = build_image_index(image_dir)
 
@@ -244,14 +315,13 @@ def prepare_datasets(
     # =========================
 
     if save_csv:
-        split_dir = "dataset/Splits"
         os.makedirs(split_dir, exist_ok=True)
 
         train_df.to_csv(os.path.join(split_dir, "train.csv"), index=False)
         val_df.to_csv(os.path.join(split_dir, "val.csv"), index=False)
         test_df.to_csv(os.path.join(split_dir, "test.csv"), index=False)
 
-        print("\nCSV salvati in dataset/Splits/")
+        print(f"\nCSV salvati in {split_dir}/")
 
     # =========================
     # 7. Creazione tf.data.Dataset
