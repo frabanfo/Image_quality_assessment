@@ -17,6 +17,9 @@ RANDOM_STATE = 42
 DATASET_DIR_ENV = "CHALLENGEDB_DIR"
 DEFAULT_DATASET_DIR = "ChallengeDB_release"
 
+MOS_MIN = 0.0
+MOS_MAX = 100.0
+
 
 def load_local_env(env_path=".env"):
     if DATASET_DIR_ENV in os.environ or not os.path.exists(env_path):
@@ -114,7 +117,7 @@ def build_image_index(image_dir):
 def load_image(image_path, mos):
     """
     Legge un'immagine dal path, la ridimensiona e restituisce:
-    immagine preprocessata, MOS
+    immagine in [0, 255] float32, MOS normalizzato in [0, 1].
     """
 
     image = tf.io.read_file(image_path)
@@ -128,8 +131,24 @@ def load_image(image_path, mos):
     image.set_shape([IMG_SIZE, IMG_SIZE, 3])
 
     mos = tf.cast(mos, tf.float32)
+    mos = (mos - MOS_MIN) / (MOS_MAX - MOS_MIN)
 
     return image, mos
+
+
+def augment(image, mos):
+    """
+    Augmentation leggera per IQA: solo trasformazioni che non alterano
+    la qualità percepita (flip orizzontale, piccole variazioni di luminosità
+    e contrasto). Evitare distorsioni geometriche forti o color jitter pesante
+    che invaliderebbero il label MOS.
+    """
+    image = tf.image.random_flip_left_right(image)
+    image = tf.image.random_brightness(image, max_delta=10.0)
+    image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+    image = tf.clip_by_value(image, 0.0, 255.0)
+    return image, mos
+
 
 def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False):
     """
@@ -156,6 +175,9 @@ def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False):
         load_image,
         num_parallel_calls=tf.data.AUTOTUNE
     )
+
+    if shuffle:
+        dataset = dataset.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
 
     dataset = dataset.batch(batch_size)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)

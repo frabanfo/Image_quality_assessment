@@ -31,20 +31,35 @@ layers = keras.layers
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _regression_head(x: tf.Tensor, dropout: float = 0.3) -> tf.Tensor:
-    """Dropout → Dense(1). Returns a scalar tensor per sample."""
+def _regression_head(x: tf.Tensor, dropout: float = 0.3, l2: float = 1e-4) -> tf.Tensor:
+    """Dropout → Dense(1, sigmoid). Output in [0, 1] (maps to normalised MOS)."""
     x = layers.Dropout(dropout)(x)
-    x = layers.Dense(1, name="mos_output")(x)
+    x = layers.Dense(
+        1,
+        activation="sigmoid",
+        kernel_regularizer=keras.regularizers.l2(l2),
+        name="mos_output",
+    )(x)
     return x
 
 
-def set_trainable(model: keras.Model, backbone_trainable: bool) -> None:
+def set_trainable(
+    model: keras.Model,
+    backbone_trainable: bool,
+    n_top_layers: int | None = None,
+) -> None:
     """
-    Toggle the backbone trainability without recompiling the model structure.
-    Call model.compile() again after this to apply the new learning rates.
+    Toggle backbone trainability.
+
+    n_top_layers: if set, freeze all backbone layers except the last
+    n_top_layers — useful for progressive unfreezing (Phase 2a).
+    Pass None (default) to unfreeze the entire backbone (Phase 2b).
     """
     backbone = model.get_layer("efficientnetb0")
     backbone.trainable = backbone_trainable
+    if backbone_trainable and n_top_layers is not None:
+        for layer in backbone.layers[:-n_top_layers]:
+            layer.trainable = False
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +141,10 @@ def build_model_b(dropout: float = 0.3) -> keras.Model:
     return keras.Model(inputs=inputs, outputs=outputs, name="ModelB_multiscale")
 
 
-def set_trainable_b(model: keras.Model, backbone_trainable: bool) -> None:
-    """Toggle backbone for Model B (shared backbone called 'efficientnetb0')."""
-    backbone = model.get_layer("efficientnetb0")
-    backbone.trainable = backbone_trainable
+def set_trainable_b(
+    model: keras.Model,
+    backbone_trainable: bool,
+    n_top_layers: int | None = None,
+) -> None:
+    """Toggle backbone for Model B. Same semantics as set_trainable."""
+    set_trainable(model, backbone_trainable, n_top_layers=n_top_layers)

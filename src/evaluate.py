@@ -99,6 +99,11 @@ def main():
         test_ds,
         max_batches=args.max_batches,
     )
+    # MOS è normalizzato in [0,1] dalla pipeline; rescala a [0,100] prima di
+    # calcolare MAE/RMSE per averli nella scala originale. SRCC/PLCC sono
+    # invarianti alla scala e non ne hanno bisogno.
+    y_true = y_true * 100.0
+    y_pred = y_pred * 100.0
     metrics = compute_metrics(y_true, y_pred)
 
     print(f"\nSamples evaluated: {len(y_true)}")

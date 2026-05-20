@@ -19,7 +19,7 @@ htmlcov/
 venv/
 env/
 ENV/
-
+.claude/
 context/
 
 # Packaging and build outputs
@@ -43,6 +43,7 @@ data/
 dataset_raw/
 raw_frames/
 normalized_house/
+ChallengeDB_release/
 
 # Training outputs, model weights, and exports
 runs/

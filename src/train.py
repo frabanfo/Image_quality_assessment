@@ -75,10 +75,37 @@ def _phase1(model, train_ds, val_ds, epochs, lr, set_trainable_fn):
 
 
 def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_trainable_fn):
-    """Fine-tuning completo con early stopping su val SRCC."""
-    set_trainable_fn(model, backbone_trainable=True)
+    """
+    Fine-tuning progressivo in due sub-fasi:
+
+    2a — sblocca solo i top 30 layer del backbone (ultimi ~2 blocchi),
+         LR invariato, niente early stopping. Adatta le feature di alto
+         livello prima di toccare i layer più profondi.
+
+    2b — sblocca l'intero backbone con LR/10, early stopping su val_srcc.
+         LR ridotto per non distruggere le feature di basso livello.
+    """
+    warmup_epochs = max(5, epochs // 4)
+    remaining_epochs = epochs - warmup_epochs
+
+    # ---- Phase 2a: top-30 layer only ----------------------------------------
+    set_trainable_fn(model, backbone_trainable=True, n_top_layers=30)
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=lr),
+        loss='mse',
+    )
+    model.fit(
+        train_ds,
+        epochs=warmup_epochs,
+        validation_data=val_ds,
+        callbacks=[SRCCCallback(val_ds)],
+        verbose=1,
+    )
+
+    # ---- Phase 2b: full backbone, lower LR, early stopping ------------------
+    set_trainable_fn(model, backbone_trainable=True)
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=lr / 10),
         loss='mse',
     )
 
@@ -88,7 +115,7 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
             monitor='val_srcc',
             mode='max',
             patience=patience,
-            restore_best_weights=True,  # ricarica i pesi dell'epoca migliore
+            restore_best_weights=True,
             verbose=1,
         ),
         keras.callbacks.ModelCheckpoint(
@@ -99,11 +126,19 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
             save_weights_only=True,
             verbose=1,
         ),
+        keras.callbacks.ReduceLROnPlateau(
+            monitor='val_srcc',
+            mode='max',
+            factor=0.5,
+            patience=3,
+            min_lr=1e-7,
+            verbose=1,
+        ),
     ]
 
     return model.fit(
         train_ds,
-        epochs=epochs,
+        epochs=remaining_epochs,
         validation_data=val_ds,
         callbacks=callbacks,
         verbose=1,
