@@ -11,12 +11,12 @@ Interfaccia attesa dai dataset (da dataset.py dei compagni):
       mos   : tf.Tensor shape (B,),             dtype float32
 """
 
+import argparse
 import os
 from pathlib import Path
 
 os.environ.setdefault("KERAS_HOME", str(Path(__file__).resolve().parents[1] / ".keras"))
 
-import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from scipy.stats import spearmanr
@@ -96,6 +96,7 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
             monitor='val_srcc',
             mode='max',
             save_best_only=True,
+            save_weights_only=True,
             verbose=1,
         ),
     ]
@@ -146,7 +147,7 @@ def train(
         (history_phase1, history_phase2)
     """
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f"{model_name}_best.keras")
+    save_path = os.path.join(save_dir, f"{model_name}_best.weights.h5")
 
     print(f"\n{'='*55}")
     print(f"  Phase 1 — head only  ({phase1_epochs} epochs, lr={phase1_lr})")
@@ -164,28 +165,60 @@ def train(
     return h1, h2
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", choices=["a", "b"], default="a")
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--phase1-epochs", type=int, default=5)
+    parser.add_argument("--phase2-epochs", type=int, default=30)
+    parser.add_argument("--phase1-lr", type=float, default=1e-3)
+    parser.add_argument("--phase2-lr", type=float, default=1e-5)
+    parser.add_argument("--patience", type=int, default=7)
+    parser.add_argument("--save-dir", default="checkpoints")
+    parser.add_argument("--smoke-test", action="store_true")
+    return parser.parse_args()
+
+
+def build_training_target(model_name):
+    if model_name == "a":
+        return build_model_a(), "model_a", set_trainable
+
+    return build_model_b(), "model_b", set_trainable_b
+
+
 # ---------------------------------------------------------------------------
-# Entry point rapido per test / lancio diretto
+# Entry point per training / smoke test
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    train_ds, val_ds, test_ds = prepare_datasets(save_csv=True)
+    args = parse_args()
+    train_ds, val_ds, test_ds = prepare_datasets(
+        batch_size=args.batch_size,
+        save_csv=True,
+    )
 
-    model_a = build_model_a()
-    model_a.summary()
+    model, model_name, set_trainable_fn = build_training_target(args.model)
+    model.summary()
 
-    for images, mos in train_ds.take(1):
-        preds = model_a(images, training=False)
-        print("\nSmoke test pipeline + Model A:")
-        print("Images shape:", images.shape)
-        print("Images range:", float(tf.reduce_min(images)), float(tf.reduce_max(images)))
-        print("MOS shape:", mos.shape)
-        print("Predictions shape:", preds.shape)
-
-    # train(
-    #     model=model_a,
-    #     train_ds=train_ds,
-    #     val_ds=val_ds,
-    #     model_name='model_a',
-    #     set_trainable_fn=set_trainable,
-    # )
+    if args.smoke_test:
+        for images, mos in train_ds.take(1):
+            preds = model(images, training=False)
+            print("\nSmoke test pipeline + model:")
+            print("Images shape:", images.shape)
+            print("Images range:", float(tf.reduce_min(images)), float(tf.reduce_max(images)))
+            print("MOS shape:", mos.shape)
+            print("Predictions shape:", preds.shape)
+    else:
+        train(
+            model=model,
+            train_ds=train_ds,
+            val_ds=val_ds,
+            model_name=model_name,
+            phase1_epochs=args.phase1_epochs,
+            phase2_epochs=args.phase2_epochs,
+            phase1_lr=args.phase1_lr,
+            phase2_lr=args.phase2_lr,
+            patience=args.patience,
+            save_dir=args.save_dir,
+            set_trainable_fn=set_trainable_fn,
+        )

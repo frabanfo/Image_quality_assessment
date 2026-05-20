@@ -65,11 +65,12 @@ def build_model_a(input_shape: tuple = (224, 224, 3), dropout: float = 0.3) -> k
     backbone = keras.applications.EfficientNetB0(
         include_top=False,
         weights="imagenet",
-        input_tensor=inputs,
+        input_shape=input_shape,
     )
     backbone.trainable = False   # start frozen — Phase 1
 
-    x = layers.GlobalAveragePooling2D(name="gap")(backbone.output)   # (B, 1280)
+    x = backbone(inputs, training=False)
+    x = layers.GlobalAveragePooling2D(name="gap")(x)                 # (B, 1280)
     outputs = _regression_head(x, dropout=dropout)                    # (B, 1)
 
     return keras.Model(inputs=inputs, outputs=outputs, name="ModelA_baseline")
