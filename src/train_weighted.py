@@ -35,31 +35,37 @@ from src.models import build_model_a, build_model_b, set_trainable, set_trainabl
 
 class WeightedMSELoss(keras.losses.Loss):
     """
-    MSE pesata inversamente alla deviazione standard delle annotazioni.
+    MSE pesata esponenzialmente sulla deviazione standard delle annotazioni.
 
     y_true: tensor (B, 2) — colonna 0 = mos_norm, colonna 1 = std_norm.
     y_pred: tensor (B, 1) — previsione del modello.
 
-    eps evita divisione per zero per immagini con std ≈ 0 (tutti i
-    valutatori d'accordo esatto — raro ma possibile).
+    Formula:  w = exp(-alpha * std_norm)
+    - alpha=0  → tutti i pesi uguali (MSE classica)
+    - alpha>0  → bassa SD = peso alto, alta SD = peso basso
+    - La curva esponenziale è più smooth dell'inversa: evita pesi estremi
+      su campioni con std ≈ 0 e differenzia meglio la zona intermedia.
+
+    I pesi vengono normalizzati a media=1 per mantenere la loss sulla
+    stessa scala della MSE standard.
     """
 
-    def __init__(self, eps: float = 0.01, name: str = "weighted_mse", **kwargs):
+    def __init__(self, alpha: float = 1.0, name: str = "weighted_mse", **kwargs):
         super().__init__(name=name, **kwargs)
-        self.eps = eps
+        self.alpha = alpha
 
     def call(self, y_true, y_pred):
         mos = y_true[:, 0:1]
         std = y_true[:, 1:2]
 
-        weights = 1.0 / (std + self.eps)
+        weights = tf.exp(-self.alpha * std)
         weights = weights / tf.reduce_mean(weights)  # normalizza a media=1
 
         return tf.reduce_mean(weights * tf.square(mos - y_pred))
 
     def get_config(self):
         cfg = super().get_config()
-        cfg["eps"] = self.eps
+        cfg["alpha"] = self.alpha
         return cfg
 
 
@@ -188,7 +194,7 @@ def train_weighted(
     patience: int = 7,
     save_dir: str = "checkpoints",
     set_trainable_fn=set_trainable,
-    eps: float = 0.01,
+    alpha: float = 1.0,
 ):
     """
     Stessa pipeline a 2 fasi di train.py ma con WeightedMSELoss.
@@ -200,10 +206,10 @@ def train_weighted(
     """
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f"{model_name}_wmse_best.weights.h5")
-    loss_fn = WeightedMSELoss(eps=eps)
+    loss_fn = WeightedMSELoss(alpha=alpha)
 
     print(f"\n{'='*60}")
-    print(f"  WeightedMSE training — eps={eps}")
+    print(f"  WeightedMSE training — alpha={alpha}")
     print(f"{'='*60}")
 
     print(f"\n{'='*55}")
@@ -238,8 +244,8 @@ def parse_args():
     parser.add_argument("--phase1-lr", type=float, default=1e-3)
     parser.add_argument("--phase2-lr", type=float, default=1e-5)
     parser.add_argument("--patience", type=int, default=7)
-    parser.add_argument("--eps", type=float, default=0.01,
-                        help="Epsilon nella loss: w = 1/(std_norm + eps)")
+    parser.add_argument("--alpha", type=float, default=1.0,
+                        help="Pendenza nella loss: w = exp(-alpha * std_norm)")
     parser.add_argument("--save-dir", default="checkpoints")
     parser.add_argument("--smoke-test", action="store_true")
     return parser.parse_args()
@@ -273,7 +279,7 @@ if __name__ == "__main__":
             print("std_norm range:", float(tf.reduce_min(y[:, 1])),
                   float(tf.reduce_max(y[:, 1])))
             print("Predictions shape:", preds.shape)
-            loss_fn = WeightedMSELoss(eps=args.eps)
+            loss_fn = WeightedMSELoss(alpha=args.alpha)
             loss_val = loss_fn(y, preds)
             print("Loss on first batch:", float(loss_val))
     else:
@@ -289,5 +295,5 @@ if __name__ == "__main__":
             patience=args.patience,
             save_dir=args.save_dir,
             set_trainable_fn=set_trainable_fn,
-            eps=args.eps,
+            alpha=args.alpha,
         )
