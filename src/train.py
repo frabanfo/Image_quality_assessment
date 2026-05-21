@@ -1,5 +1,5 @@
 """
-Training pipeline for IQA models A and B.
+Training pipeline for IQA CNN and ViT regressors.
 
 Two-phase fine-tuning:
   Phase 1 — backbone frozen, solo la testa si aggiorna, LR alto
@@ -22,7 +22,14 @@ from tensorflow import keras
 from scipy.stats import spearmanr
 
 from src.data_pipeline import prepare_datasets
-from src.models import build_model_a, build_model_b, set_trainable, set_trainable_b
+from src.models import (
+    build_model_a,
+    build_model_b,
+    build_model_vit,
+    set_trainable,
+    set_trainable_b,
+    set_trainable_vit,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +137,7 @@ def train(
     Pipeline completa di training in 2 fasi.
 
     Args:
-        model           : modello da build_model_a() o build_model_b()
+        model           : modello da build_model_a(), build_model_b() o build_model_vit()
         train_ds        : tf.data.Dataset (image, mos) — training
         val_ds          : tf.data.Dataset (image, mos) — validation
         model_name      : prefisso per il file di checkpoint
@@ -140,7 +147,8 @@ def train(
         phase2_lr       : learning rate fase 2
         patience        : epoche senza miglioramento su val_srcc prima dello stop
         save_dir        : cartella dove salvare il modello migliore
-        set_trainable_fn: usa set_trainable per ModelA, set_trainable_b per ModelB
+        set_trainable_fn: usa set_trainable per ModelA, set_trainable_b per ModelB,
+                           set_trainable_vit per il ViT
 
     Returns:
         (history_phase1, history_phase2)
@@ -171,21 +179,23 @@ def train(
 if __name__ == '__main__':
     train_ds, val_ds, test_ds = prepare_datasets(save_csv=True)
 
-    model_a = build_model_a()
-    model_a.summary()
+    model_vit = build_model_vit()
+    model_vit.summary()
 
     for images, mos in train_ds.take(1):
-        preds = model_a(images, training=False)
-        print("\nSmoke test pipeline + Model A:")
+        preds = model_vit(images, training=False)
+        print("\nSmoke test pipeline + Model ViT:")
         print("Images shape:", images.shape)
         print("Images range:", float(tf.reduce_min(images)), float(tf.reduce_max(images)))
         print("MOS shape:", mos.shape)
         print("Predictions shape:", preds.shape)
 
     # train(
-    #     model=model_a,
+    #     model=model_vit,
     #     train_ds=train_ds,
     #     val_ds=val_ds,
-    #     model_name='model_a',
-    #     set_trainable_fn=set_trainable,
+    #     model_name='model_vit',
+    #     set_trainable_fn=set_trainable_vit,
+    #     phase1_lr=1e-4,
+    #     phase2_lr=1e-4,
     # )
