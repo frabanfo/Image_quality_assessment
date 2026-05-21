@@ -102,13 +102,24 @@ def _encode_patches(
         projection_dim,
         name="patch_projection",
     )(patches)
-    positions = tf.range(start=0, limit=num_patches, delta=1)
-    position_embeddings = layers.Embedding(
+
+    position_embedding_layer = layers.Embedding(
         input_dim=num_patches,
         output_dim=projection_dim,
         name="patch_position_embedding",
-    )(positions)
-    return layers.Add(name="patch_encoder")([projected, position_embeddings])
+    )
+
+    def add_positional_encoding(tokens):
+        positions = tf.range(start=0, limit=num_patches, delta=1)
+        position_embeddings = position_embedding_layer(positions)
+        position_embeddings = tf.expand_dims(position_embeddings, axis=0)
+        return tokens + position_embeddings
+
+    return layers.Lambda(
+        add_positional_encoding,
+        output_shape=(num_patches, projection_dim),
+        name="patch_encoder",
+    )(projected)
 
 
 def _transformer_block(x: tf.Tensor, layer_idx: int) -> tf.Tensor:
