@@ -44,8 +44,9 @@ class SRCCCallback(keras.callbacks.Callback):
 
     def on_epoch_end(self, epoch, logs=None):
         y_true, y_pred = [], []
-        for images, mos in self.val_dataset:
+        for images, y in self.val_dataset:
             preds = self.model(images, training=False)
+            mos = y[:, 0] if y.shape.rank == 2 else y  # supporta return_std=True/False
             y_true.extend(mos.numpy())
             y_pred.extend(preds.numpy().flatten())
 
@@ -94,7 +95,7 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
         optimizer=keras.optimizers.Adam(learning_rate=lr),
         loss='mse',
     )
-    model.fit(
+    h2a = model.fit(
         train_ds,
         epochs=warmup_epochs,
         validation_data=val_ds,
@@ -136,13 +137,14 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
         ),
     ]
 
-    return model.fit(
+    h2b = model.fit(
         train_ds,
         epochs=remaining_epochs,
         validation_data=val_ds,
         callbacks=callbacks,
         verbose=1,
     )
+    return h2a, h2b
 
 
 # ---------------------------------------------------------------------------
@@ -193,11 +195,11 @@ def train(
     print(f"  Phase 2 — full fine-tuning  (max {phase2_epochs} epochs, lr={phase2_lr})")
     print(f"  Early stopping: patience={patience} su val_srcc")
     print(f"{'='*55}")
-    h2 = _phase2(model, train_ds, val_ds, phase2_epochs, phase2_lr, patience,
-                 save_path, set_trainable_fn)
+    h2a, h2b = _phase2(model, train_ds, val_ds, phase2_epochs, phase2_lr, patience,
+                       save_path, set_trainable_fn)
 
     print(f"\nModello migliore salvato in: {save_path}")
-    return h1, h2
+    return h1, h2a, h2b
 
 
 def parse_args():

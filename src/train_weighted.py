@@ -23,10 +23,10 @@ os.environ.setdefault("KERAS_HOME", str(Path(__file__).resolve().parents[1] / ".
 
 import tensorflow as tf
 from tensorflow import keras
-from scipy.stats import spearmanr
 
 from src.data_pipeline import prepare_datasets
 from src.models import build_model_a, build_model_b, set_trainable, set_trainable_b
+from src.train import SRCCCallback
 
 
 # ---------------------------------------------------------------------------
@@ -70,34 +70,6 @@ class WeightedMSELoss(keras.losses.Loss):
 
 
 # ---------------------------------------------------------------------------
-# Callback SRCC — adattato per y = [mos_norm, std_norm]
-# ---------------------------------------------------------------------------
-
-class SRCCCallbackWeighted(keras.callbacks.Callback):
-    """
-    Calcola SRCC sul validation set a fine epoca.
-
-    Si aspetta che val_dataset emetta (image, y) con y shape (B, 2)
-    dove y[:, 0] è il MOS normalizzato.
-    """
-
-    def __init__(self, val_dataset: tf.data.Dataset):
-        super().__init__()
-        self.val_dataset = val_dataset
-
-    def on_epoch_end(self, epoch, logs=None):
-        y_true, y_pred = [], []
-        for images, y in self.val_dataset:
-            mos = y[:, 0]
-            preds = self.model(images, training=False)
-            y_true.extend(mos.numpy())
-            y_pred.extend(preds.numpy().flatten())
-
-        srcc, _ = spearmanr(y_true, y_pred)
-        logs["val_srcc"] = float(srcc)
-
-
-# ---------------------------------------------------------------------------
 # Fasi di training
 # ---------------------------------------------------------------------------
 
@@ -111,7 +83,7 @@ def _phase1(model, train_ds, val_ds, epochs, lr, set_trainable_fn, loss_fn):
         train_ds,
         epochs=epochs,
         validation_data=val_ds,
-        callbacks=[SRCCCallbackWeighted(val_ds)],
+        callbacks=[SRCCCallback(val_ds)],
         verbose=1,
     )
 
@@ -127,11 +99,11 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path,
         optimizer=keras.optimizers.Adam(learning_rate=lr),
         loss=loss_fn,
     )
-    model.fit(
+    h2a = model.fit(
         train_ds,
         epochs=warmup_epochs,
         validation_data=val_ds,
-        callbacks=[SRCCCallbackWeighted(val_ds)],
+        callbacks=[SRCCCallback(val_ds)],
         verbose=1,
     )
 
@@ -143,7 +115,7 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path,
     )
 
     callbacks = [
-        SRCCCallbackWeighted(val_ds),
+        SRCCCallback(val_ds),
         keras.callbacks.EarlyStopping(
             monitor="val_srcc",
             mode="max",
@@ -169,13 +141,14 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path,
         ),
     ]
 
-    return model.fit(
+    h2b = model.fit(
         train_ds,
         epochs=remaining_epochs,
         validation_data=val_ds,
         callbacks=callbacks,
         verbose=1,
     )
+    return h2a, h2b
 
 
 # ---------------------------------------------------------------------------
@@ -222,11 +195,11 @@ def train_weighted(
     print(f"  Phase 2 — full fine-tuning  (max {phase2_epochs} epochs, lr={phase2_lr})")
     print(f"  Early stopping: patience={patience} su val_srcc")
     print(f"{'='*55}")
-    h2 = _phase2(model, train_ds, val_ds, phase2_epochs, phase2_lr, patience,
-                 save_path, set_trainable_fn, loss_fn)
+    h2a, h2b = _phase2(model, train_ds, val_ds, phase2_epochs, phase2_lr, patience,
+                       save_path, set_trainable_fn, loss_fn)
 
     print(f"\nModello migliore salvato in: {save_path}")
-    return h1, h2
+    return h1, h2a, h2b
 
 
 # ---------------------------------------------------------------------------
