@@ -114,26 +114,28 @@ def build_image_index(image_dir):
     return image_dir, image_index
 
 
-def load_image(image_path, mos):
-    """
-    Legge un'immagine dal path, la ridimensiona e restituisce:
-    immagine in [0, 255] float32, MOS normalizzato in [0, 1].
-    """
-
+def _decode_image(image_path):
     image = tf.io.read_file(image_path)
-
-    # Se le immagini sono JPG/JPEG va bene decode_jpeg.
-    # Se il dataset contiene anche PNG, BMP, ecc. usa decode_image.
     image = tf.image.decode_image(image, channels=3, expand_animations=False)
-
     image = tf.image.resize(image, [IMG_SIZE, IMG_SIZE])
     image = tf.cast(image, tf.float32)
     image.set_shape([IMG_SIZE, IMG_SIZE, 3])
+    return image
 
-    mos = tf.cast(mos, tf.float32)
-    mos = (mos - MOS_MIN) / (MOS_MAX - MOS_MIN)
 
+def load_image(image_path, mos):
+    """Immagine in [0,255] float32, MOS normalizzato in [0,1]."""
+    image = _decode_image(image_path)
+    mos = (tf.cast(mos, tf.float32) - MOS_MIN) / (MOS_MAX - MOS_MIN)
     return image, mos
+
+
+def load_image_with_std(image_path, mos, std):
+    """Come load_image ma restituisce y = [mos_norm, std_norm] shape (2,)."""
+    image = _decode_image(image_path)
+    mos_norm = (tf.cast(mos, tf.float32) - MOS_MIN) / (MOS_MAX - MOS_MIN)
+    std_norm = tf.cast(std, tf.float32) / MOS_MAX
+    return image, tf.stack([mos_norm, std_norm])
 
 
 def augment(image, mos):
@@ -150,38 +152,45 @@ def augment(image, mos):
     return image, mos
 
 
-def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False):
+def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False, return_std=False):
     """
     Converte un DataFrame in tf.data.Dataset.
-    Ogni elemento sarà:
-        immagine, mos
-    """
 
+    return_std=False  → emette (image, mos_norm)
+    return_std=True   → emette (image, [mos_norm, std_norm]) — per WeightedMSELoss
+    """
     image_paths = df["image_path"].values
     mos_values = df["mos"].values
 
-    dataset = tf.data.Dataset.from_tensor_slices(
-        (image_paths, mos_values)
-    )
+    if return_std:
+        std_values = df["std"].values
+        slices = (image_paths, mos_values, std_values)
+    else:
+        slices = (image_paths, mos_values)
+
+    dataset = tf.data.Dataset.from_tensor_slices(slices)
 
     if shuffle:
         dataset = dataset.shuffle(
             buffer_size=len(df),
             seed=RANDOM_STATE,
-            reshuffle_each_iteration=True
+            reshuffle_each_iteration=True,
         )
 
-    dataset = dataset.map(
-        load_image,
-        num_parallel_calls=tf.data.AUTOTUNE
-    )
+    map_fn = load_image_with_std if return_std else load_image
+    dataset = dataset.map(map_fn, num_parallel_calls=tf.data.AUTOTUNE)
 
     if shuffle:
-        dataset = dataset.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
+        if return_std:
+            dataset = dataset.map(
+                lambda img, y: (augment(img, y[0])[0], y),
+                num_parallel_calls=tf.data.AUTOTUNE,
+            )
+        else:
+            dataset = dataset.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
 
     dataset = dataset.batch(batch_size)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
-
     return dataset
 
 
@@ -191,6 +200,7 @@ def prepare_datasets(
     batch_size=BATCH_SIZE,
     save_csv=True,
     split_dir="Splits",
+    return_std=False,
 ):
     """
     Funzione principale.
@@ -352,19 +362,22 @@ def prepare_datasets(
     train_ds = create_tf_dataset(
         train_df,
         batch_size=batch_size,
-        shuffle=True
+        shuffle=True,
+        return_std=return_std,
     )
 
     val_ds = create_tf_dataset(
         val_df,
         batch_size=batch_size,
-        shuffle=False
+        shuffle=False,
+        return_std=return_std,
     )
 
     test_ds = create_tf_dataset(
         test_df,
         batch_size=batch_size,
-        shuffle=False
+        shuffle=False,
+        return_std=return_std,
     )
 
     return train_ds, val_ds, test_ds
