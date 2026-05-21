@@ -2,9 +2,10 @@
 Dedicated training script for the ViT IQA regressor.
 
 Run from the project root:
-    python3 -m src.train_vit
+    python3 -m src.train_vit --epochs 20 --learning-rate 1e-4
 """
 
+import argparse
 import os
 from pathlib import Path
 
@@ -25,6 +26,45 @@ PATIENCE = 5
 SAVE_DIR = "checkpoints"
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train the ViT IQA regressor.")
+    parser.add_argument("--epochs", type=int, default=EPOCHS, help="Number of training epochs.")
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=LEARNING_RATE,
+        help="Adam learning rate.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=PATIENCE,
+        help="Early stopping patience on validation SRCC.",
+    )
+    parser.add_argument(
+        "--save-dir",
+        default=SAVE_DIR,
+        help="Directory where the best checkpoint will be stored.",
+    )
+    parser.add_argument(
+        "--model-name",
+        default=MODEL_NAME,
+        help="Prefix used for the saved checkpoint filename.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=16,
+        help="Batch size passed to prepare_datasets().",
+    )
+    parser.add_argument(
+        "--save-csv",
+        action="store_true",
+        help="Save train/val/test CSV splits to disk.",
+    )
+    return parser.parse_args()
+
+
 def evaluate_on_test(model_vit, test_ds):
     y_true, y_pred = [], []
 
@@ -41,17 +81,20 @@ def evaluate_on_test(model_vit, test_ds):
     print(f"PLCC: {float(plcc):.4f}")
 
 
-def main():
-    train_ds, val_ds, test_ds = prepare_datasets(save_csv=True)
+def main(args):
+    train_ds, val_ds, test_ds = prepare_datasets(
+        batch_size=args.batch_size,
+        save_csv=args.save_csv,
+    )
 
     model_vit = build_model_vit()
     model_vit.summary()
 
-    os.makedirs(SAVE_DIR, exist_ok=True)
-    save_path = os.path.join(SAVE_DIR, f"{MODEL_NAME}_best.keras")
+    os.makedirs(args.save_dir, exist_ok=True)
+    save_path = os.path.join(args.save_dir, f"{args.model_name}_best.keras")
 
     model_vit.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
+        optimizer=keras.optimizers.Adam(learning_rate=args.learning_rate),
         loss="mse",
     )
 
@@ -60,7 +103,7 @@ def main():
         keras.callbacks.EarlyStopping(
             monitor="val_srcc",
             mode="max",
-            patience=PATIENCE,
+            patience=args.patience,
             restore_best_weights=True,
             verbose=1,
         ),
@@ -75,7 +118,7 @@ def main():
 
     model_vit.fit(
         train_ds,
-        epochs=EPOCHS,
+        epochs=args.epochs,
         validation_data=val_ds,
         callbacks=callbacks,
         verbose=1,
@@ -86,4 +129,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(parse_args())
