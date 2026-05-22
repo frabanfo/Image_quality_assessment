@@ -1,8 +1,8 @@
 """
-Dedicated training script for the ViT IQA regressor.
+Dedicated training script for the pretrained DeiT regressor.
 
 Run from the project root:
-    python3 -m src.train_vit --epochs 20 --learning-rate 1e-4
+    python3 -m src.train_vit --phase1-epochs 3 --phase2-epochs 10
 """
 
 import argparse
@@ -12,56 +12,37 @@ from pathlib import Path
 os.environ.setdefault("KERAS_HOME", str(Path(__file__).resolve().parents[1] / ".keras"))
 
 from scipy.stats import pearsonr, spearmanr
+
 from src.data_pipeline import prepare_datasets
-from tensorflow import keras
+from src.models_vit_pretrained import (
+    DEFAULT_BACKBONE,
+    build_model_vit,
+    set_trainable_vit,
+)
+from src.train import train
 
-from src.models import build_model_vit
-from src.train import SRCCCallback
 
-
-MODEL_NAME = "model_vit"
-EPOCHS = 20
-LEARNING_RATE = 1e-4
+MODEL_NAME = "model_vit_pretrained"
+PHASE1_EPOCHS = 3
+PHASE2_EPOCHS = 12
+PHASE1_LR = 1e-3
+PHASE2_LR = 1e-5
 PATIENCE = 5
 SAVE_DIR = "checkpoints"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train the ViT IQA regressor.")
-    parser.add_argument("--epochs", type=int, default=EPOCHS, help="Number of training epochs.")
-    parser.add_argument(
-        "--learning-rate",
-        type=float,
-        default=LEARNING_RATE,
-        help="Adam learning rate.",
-    )
-    parser.add_argument(
-        "--patience",
-        type=int,
-        default=PATIENCE,
-        help="Early stopping patience on validation SRCC.",
-    )
-    parser.add_argument(
-        "--save-dir",
-        default=SAVE_DIR,
-        help="Directory where the best checkpoint will be stored.",
-    )
-    parser.add_argument(
-        "--model-name",
-        default=MODEL_NAME,
-        help="Prefix used for the saved checkpoint filename.",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=16,
-        help="Batch size passed to prepare_datasets().",
-    )
-    parser.add_argument(
-        "--save-csv",
-        action="store_true",
-        help="Save train/val/test CSV splits to disk.",
-    )
+    parser = argparse.ArgumentParser(description="Train the pretrained DeiT IQA regressor.")
+    parser.add_argument("--backbone-name", default=DEFAULT_BACKBONE, help="Hugging Face model id.")
+    parser.add_argument("--phase1-epochs", type=int, default=PHASE1_EPOCHS)
+    parser.add_argument("--phase2-epochs", type=int, default=PHASE2_EPOCHS)
+    parser.add_argument("--phase1-lr", type=float, default=PHASE1_LR)
+    parser.add_argument("--phase2-lr", type=float, default=PHASE2_LR)
+    parser.add_argument("--patience", type=int, default=PATIENCE)
+    parser.add_argument("--save-dir", default=SAVE_DIR)
+    parser.add_argument("--model-name", default=MODEL_NAME)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--save-csv", action="store_true")
     return parser.parse_args()
 
 
@@ -87,44 +68,23 @@ def main(args):
         save_csv=args.save_csv,
     )
 
-    model_vit = build_model_vit()
+    model_vit = build_model_vit(backbone_name=args.backbone_name)
     model_vit.summary()
 
-    os.makedirs(args.save_dir, exist_ok=True)
-    save_path = os.path.join(args.save_dir, f"{args.model_name}_best.keras")
-
-    model_vit.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=args.learning_rate),
-        loss="mse",
+    train(
+        model=model_vit,
+        train_ds=train_ds,
+        val_ds=val_ds,
+        model_name=args.model_name,
+        phase1_epochs=args.phase1_epochs,
+        phase2_epochs=args.phase2_epochs,
+        phase1_lr=args.phase1_lr,
+        phase2_lr=args.phase2_lr,
+        patience=args.patience,
+        save_dir=args.save_dir,
+        set_trainable_fn=set_trainable_vit,
     )
 
-    callbacks = [
-        SRCCCallback(val_ds),
-        keras.callbacks.EarlyStopping(
-            monitor="val_srcc",
-            mode="max",
-            patience=args.patience,
-            restore_best_weights=True,
-            verbose=1,
-        ),
-        keras.callbacks.ModelCheckpoint(
-            filepath=save_path,
-            monitor="val_srcc",
-            mode="max",
-            save_best_only=True,
-            verbose=1,
-        ),
-    ]
-
-    model_vit.fit(
-        train_ds,
-        epochs=args.epochs,
-        validation_data=val_ds,
-        callbacks=callbacks,
-        verbose=1,
-    )
-
-    print(f"\nModello migliore salvato in: {save_path}")
     evaluate_on_test(model_vit, test_ds)
 
 
