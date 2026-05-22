@@ -1,5 +1,5 @@
 """
-Dedicated training script for the pretrained DeiT regressor.
+Dedicated training script for the pretrained ViT regressor.
 
 Run from the project root:
     python3 -m src.train_vit --phase1-epochs 3 --phase2-epochs 10
@@ -32,7 +32,7 @@ SAVE_DIR = "checkpoints"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train the pretrained DeiT IQA regressor.")
+    parser = argparse.ArgumentParser(description="Train the pretrained ViT IQA regressor.")
     parser.add_argument("--backbone-name", default=DEFAULT_BACKBONE, help="Hugging Face model id.")
     parser.add_argument("--phase1-epochs", type=int, default=PHASE1_EPOCHS)
     parser.add_argument("--phase2-epochs", type=int, default=PHASE2_EPOCHS)
