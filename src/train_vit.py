@@ -12,6 +12,7 @@ from pathlib import Path
 os.environ.setdefault("KERAS_HOME", str(Path(__file__).resolve().parents[1] / ".keras"))
 
 from scipy.stats import pearsonr, spearmanr
+import tensorflow as tf
 
 from src.data_pipeline import prepare_datasets
 from src.models_vit_pretrained import (
@@ -69,6 +70,7 @@ def main(args):
     )
 
     model_vit = build_model_vit(backbone_name=args.backbone_name)
+    model_vit(tf.zeros((1, 224, 224, 3), dtype=tf.float32), training=False)
     model_vit.summary()
 
     train(
