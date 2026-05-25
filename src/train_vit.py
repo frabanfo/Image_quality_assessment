@@ -55,10 +55,14 @@ def evaluate_on_test(model_vit, test_ds):
         y_true.extend(mos.numpy())
         y_pred.extend(preds.numpy().flatten())
 
+    mse = tf.reduce_mean(tf.square(tf.constant(y_true) - tf.constant(y_pred)))
+    mae = tf.reduce_mean(tf.abs(tf.constant(y_true) - tf.constant(y_pred)))
     srcc, _ = spearmanr(y_true, y_pred)
     plcc, _ = pearsonr(y_true, y_pred)
 
     print("\nTest set evaluation:")
+    print(f"MSE : {float(mse):.4f}")
+    print(f"MAE : {float(mae):.4f}")
     print(f"SRCC: {float(srcc):.4f}")
     print(f"PLCC: {float(plcc):.4f}")
 
