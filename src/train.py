@@ -1,5 +1,5 @@
 """
-Training pipeline for IQA models A and B.
+Training pipeline for IQA CNN regressors.
 
 Two-phase fine-tuning:
   Phase 1 — backbone frozen, solo la testa si aggiorna, LR alto
@@ -86,7 +86,7 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
     2b — sblocca l'intero backbone con LR/10, early stopping su val_srcc.
          LR ridotto per non distruggere le feature di basso livello.
     """
-    warmup_epochs = max(5, epochs // 4)
+    warmup_epochs = min(max(5, epochs // 4), epochs)
     remaining_epochs = epochs - warmup_epochs
 
     # ---- Phase 2a: top-30 layer only ----------------------------------------

@@ -1,19 +1,8 @@
 """
-IQA Models — EfficientNetB0 baseline (A) and multi-scale variant (B).
+IQA CNN models based on EfficientNetB0.
 
 Both models output a single float (predicted MOS).
 Fine-tuning is managed externally via model.trainable and layer.trainable flags.
-
-Usage:
-    model_a = build_model_a()
-    # Phase 1 — train only head
-    set_trainable(model_a, backbone_trainable=False)
-    model_a.compile(optimizer=Adam(1e-3), loss='mse')
-    model_a.fit(...)
-    # Phase 2 — full fine-tuning
-    set_trainable(model_a, backbone_trainable=True)
-    model_a.compile(optimizer=Adam(1e-5), loss='mse')
-    model_a.fit(...)
 """
 
 import os
@@ -66,27 +55,22 @@ def set_trainable(
             layer.trainable = False
 
 
-# ---------------------------------------------------------------------------
-# Model A — CNN Baseline
-# ---------------------------------------------------------------------------
-
 def build_model_a(input_shape: tuple = (224, 224, 3), dropout: float = 0.3) -> keras.Model:
     """
     EfficientNetB0 pretrained on ImageNet with a single regression head.
 
     Fine-tuning workflow:
-      Phase 1 — set_trainable(model, backbone_trainable=False), LR ~1e-3
-      Phase 2 — set_trainable(model, backbone_trainable=True),  LR ~1e-5
+      Phase 1 - set_trainable(model, backbone_trainable=False), LR ~1e-3
+      Phase 2 - set_trainable(model, backbone_trainable=True),  LR ~1e-5
     """
     inputs = keras.Input(shape=input_shape, name="image")
 
-    # Preprocessing built into EfficientNetB0: expects pixel values in [0, 255]
     backbone = keras.applications.EfficientNetB0(
         include_top=False,
         weights="imagenet",
         input_shape=input_shape,
     )
-    backbone.trainable = False   # start frozen — Phase 1
+    backbone.trainable = False
 
     x = backbone(inputs, training=False)
     x = layers.GlobalAveragePooling2D(name="gap")(x)                 # (B, 1280)
@@ -94,10 +78,6 @@ def build_model_a(input_shape: tuple = (224, 224, 3), dropout: float = 0.3) -> k
 
     return keras.Model(inputs=inputs, outputs=outputs, name="ModelA_baseline")
 
-
-# ---------------------------------------------------------------------------
-# Model B — Multi-Scale CNN
-# ---------------------------------------------------------------------------
 
 def build_model_b(dropout: float = 0.3) -> keras.Model:
     """

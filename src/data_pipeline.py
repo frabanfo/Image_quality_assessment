@@ -112,7 +112,7 @@ def build_image_index(image_dir):
         )
 
     return image_dir, image_index
-
+        
 
 def _decode_image(image_path):
     image = tf.io.read_file(image_path)
