@@ -137,6 +137,9 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
         ),
     ]
 
+    if remaining_epochs <= 0:
+        return h2a, h2a
+
     h2b = model.fit(
         train_ds,
         epochs=remaining_epochs,

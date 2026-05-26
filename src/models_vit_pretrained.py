@@ -79,7 +79,7 @@ class PretrainedDeiTRegressor(keras.Model):
                 layers.Dropout(dropout),
                 layers.Dense(64, activation="gelu"),
                 layers.Dropout(dropout / 2),
-                layers.Dense(1, activation="linear"),
+                layers.Dense(1, activation="sigmoid"),
             ],
             name="vit_regression_head",
         )
@@ -105,22 +105,44 @@ class PretrainedDeiTRegressor(keras.Model):
         return config
 
 
+# Numero di encoder layer da scongelare in phase 2a.
+# DeiT-tiny ha 12 encoder layer — scongeliamo solo gli ultimi 3.
+_N_TOP_ENCODER_LAYERS = 3
+
+
 def set_trainable_vit(
     model: keras.Model,
     backbone_trainable: bool,
     n_top_layers: int | None = None,
 ) -> None:
-    """Freeze or unfreeze the Hugging Face ViT backbone.
+    """Freeze/unfreeze il backbone DeiT con progressive unfreezing.
 
-    n_top_layers è ignorato: il backbone HuggingFace non espone i layer
-    interni con la stessa API di Keras, quindi il progressive unfreezing
-    avviene solo al livello backbone intero (congelato → scongelato).
+    Phase 1  (backbone_trainable=False):
+        backbone completamente congelato.
+
+    Phase 2a (backbone_trainable=True, n_top_layers=N):
+        backbone congelato, poi si scongelano solo gli ultimi
+        _N_TOP_ENCODER_LAYERS layer dell'encoder. Ignora il valore
+        numerico di n_top_layers (calibrato per EfficientNet) e usa
+        la costante specifica per DeiT.
+
+    Phase 2b (backbone_trainable=True, n_top_layers=None):
+        backbone completamente scongelato.
     """
-    if hasattr(model, "vit_backbone"):
-        model.vit_backbone.trainable = backbone_trainable
-        return
+    backbone = (
+        model.vit_backbone
+        if hasattr(model, "vit_backbone")
+        else model.get_layer("vit_backbone")
+    )
 
-    model.get_layer("vit_backbone").trainable = backbone_trainable
+    backbone.trainable = backbone_trainable
+
+    if backbone_trainable and n_top_layers is not None:
+        # Congela tutto il backbone, poi sblocca solo gli ultimi encoder layer
+        backbone.trainable = False
+        encoder_layers = backbone.deit.encoder.layer
+        for layer in encoder_layers[-_N_TOP_ENCODER_LAYERS:]:
+            layer.trainable = True
 
 
 def build_model_vit(

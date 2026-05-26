@@ -26,8 +26,8 @@ from src.train import train
 MODEL_NAME = "model_deit_tiny"
 PHASE1_EPOCHS = 3
 PHASE2_EPOCHS = 10
-PHASE1_LR = 1e-3
-PHASE2_LR = 1e-5
+PHASE1_LR = 1e-4
+PHASE2_LR = 1e-6
 PATIENCE = 5
 SAVE_DIR = "checkpoints"
 
