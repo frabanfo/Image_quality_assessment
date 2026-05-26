@@ -1,5 +1,5 @@
 """
-Dedicated training script for the pretrained ViT regressor.
+Dedicated training script for the pretrained DeiT-tiny regressor.
 
 Run from the project root:
     python3 -m src.train_vit --phase1-epochs 3 --phase2-epochs 10
@@ -23,9 +23,9 @@ from src.models_vit_pretrained import (
 from src.train import train
 
 
-MODEL_NAME = "model_vit_pretrained"
+MODEL_NAME = "model_deit_tiny"
 PHASE1_EPOCHS = 3
-PHASE2_EPOCHS = 12
+PHASE2_EPOCHS = 10
 PHASE1_LR = 1e-3
 PHASE2_LR = 1e-5
 PATIENCE = 5
@@ -33,7 +33,7 @@ SAVE_DIR = "checkpoints"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train the pretrained ViT IQA regressor.")
+    parser = argparse.ArgumentParser(description="Train the pretrained DeiT-tiny IQA regressor.")
     parser.add_argument("--backbone-name", default=DEFAULT_BACKBONE, help="Hugging Face model id.")
     parser.add_argument("--phase1-epochs", type=int, default=PHASE1_EPOCHS)
     parser.add_argument("--phase2-epochs", type=int, default=PHASE2_EPOCHS)
@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument("--patience", type=int, default=PATIENCE)
     parser.add_argument("--save-dir", default=SAVE_DIR)
     parser.add_argument("--model-name", default=MODEL_NAME)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--save-csv", action="store_true")
     return parser.parse_args()
 

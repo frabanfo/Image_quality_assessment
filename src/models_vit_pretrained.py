@@ -1,5 +1,5 @@
 """
-Pretrained Vision Transformer regressor based on Hugging Face ViT.
+Pretrained DeiT regressor based on Hugging Face DeiT-tiny.
 
 Why this file uses a subclassed Keras model instead of the Functional API:
 - Hugging Face TF backbones can reject Keras symbolic tensors (`KerasTensor`)
@@ -19,33 +19,33 @@ import tensorflow as tf
 from tensorflow import keras
 
 try:
-    from transformers import TFViTModel
-except ImportError:  # fallback for environments where TFViTModel is not exported
-    TFViTModel = None
+    from transformers import TFDeiTModel
+except ImportError:  # fallback for environments where TFDeiTModel is not exported
+    TFDeiTModel = None
     from transformers import TFAutoModel
 
 layers = keras.layers
 
 
-DEFAULT_BACKBONE = "google/vit-base-patch16-224-in21k"
-VIT_IMAGE_MEAN = [0.5, 0.5, 0.5]
-VIT_IMAGE_STD = [0.5, 0.5, 0.5]
+DEFAULT_BACKBONE = "facebook/deit-tiny-patch16-224"
+IMAGE_MEAN = [0.485, 0.456, 0.406]
+IMAGE_STD = [0.229, 0.224, 0.225]
 
 
-def _normalize_for_vit(images: tf.Tensor) -> tf.Tensor:
-    """Match the standard Hugging Face ViT preprocessing."""
+def _normalize_for_transformer(images: tf.Tensor) -> tf.Tensor:
+    """Match the standard DeiT/ImageNet preprocessing."""
     images = tf.cast(images, tf.float32) / 255.0
-    mean = tf.constant(VIT_IMAGE_MEAN, dtype=tf.float32)
-    std = tf.constant(VIT_IMAGE_STD, dtype=tf.float32)
+    mean = tf.constant(IMAGE_MEAN, dtype=tf.float32)
+    std = tf.constant(IMAGE_STD, dtype=tf.float32)
     images = tf.transpose(images, perm=[0, 3, 1, 2])
     mean = tf.reshape(mean, [1, 3, 1, 1])
     std = tf.reshape(std, [1, 3, 1, 1])
     return (images - mean) / std
 
 
-class PretrainedViTRegressor(keras.Model):
+class PretrainedDeiTRegressor(keras.Model):
     """
-    ViT backbone from Hugging Face plus a custom regression head.
+    DeiT-tiny backbone from Hugging Face plus a custom regression head.
 
     The backbone is called at runtime on actual tensors, not on symbolic
     KerasTensors created by the Functional API.
@@ -57,12 +57,12 @@ class PretrainedViTRegressor(keras.Model):
         dropout: float = 0.3,
         **kwargs,
     ):
-        super().__init__(name="ModelC_vit_base_regressor", **kwargs)
+        super().__init__(name="ModelC_deit_tiny_regressor", **kwargs)
         self.backbone_name = backbone_name
         self.dropout_rate = dropout
 
-        if TFViTModel is not None:
-            self.vit_backbone = TFViTModel.from_pretrained(
+        if TFDeiTModel is not None:
+            self.vit_backbone = TFDeiTModel.from_pretrained(
                 backbone_name,
                 name="vit_backbone",
             )
@@ -85,7 +85,7 @@ class PretrainedViTRegressor(keras.Model):
         )
 
     def call(self, inputs, training=False):
-        pixel_values = _normalize_for_vit(inputs)
+        pixel_values = _normalize_for_transformer(inputs)
         backbone_outputs = self.vit_backbone(
             pixel_values=pixel_values,
             training=training,
@@ -121,7 +121,7 @@ def build_model_vit(
     dropout: float = 0.3,
 ) -> keras.Model:
     """
-    Build a pretrained ViT regressor by replacing the classification head
+    Build a pretrained DeiT regressor by replacing the classification head
     with a lightweight regression head.
 
     `input_shape` is kept for API consistency with the other model builders.
@@ -129,7 +129,7 @@ def build_model_vit(
     works immediately.
     """
     del input_shape
-    model = PretrainedViTRegressor(
+    model = PretrainedDeiTRegressor(
         backbone_name=backbone_name,
         dropout=dropout,
     )
