@@ -74,6 +74,11 @@ class PretrainedSwinRegressor(keras.Model):
                 name="swin_backbone",
             )
         self.swin_backbone.trainable = False
+        image_size = self.swin_backbone.config.image_size
+        if isinstance(image_size, (tuple, list)):
+            self.image_size = int(image_size[0])
+        else:
+            self.image_size = int(image_size)
 
         # Local augmentation kept inside the model to isolate experiments from
         # the shared tf.data pipeline. Transformations stay moderate so they do
@@ -105,6 +110,12 @@ class PretrainedSwinRegressor(keras.Model):
 
         if self.use_model_augmentation and training:
             x = self.model_augmentation(x, training=training)
+
+        # Keep a fixed spatial size for Swin. In graph mode the local
+        # augmentation stack can leave shape information too dynamic, which
+        # then breaks the backbone's window partition / reverse reshapes.
+        x = tf.image.resize(x, (self.image_size, self.image_size))
+        x = tf.ensure_shape(x, (None, self.image_size, self.image_size, 3))
 
         pixel_values = _normalize_for_transformer(x)
         backbone_outputs = self.swin_backbone(
