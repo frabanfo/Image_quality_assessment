@@ -158,8 +158,20 @@ class PretrainedSwinRegressor(keras.Model):
         return config
 
 
-def set_trainable_vit(model: keras.Model, backbone_trainable: bool) -> None:
-    """Freeze or unfreeze the Hugging Face Swin backbone."""
+def set_trainable_vit(
+    model: keras.Model,
+    backbone_trainable: bool,
+    n_top_layers: int | None = None,
+) -> None:
+    """
+    Freeze or unfreeze the Hugging Face Swin backbone.
+
+    `train.py` can optionally ask for partial unfreezing via `n_top_layers`.
+    For HF backbones we implement this by leaving only the last N backbone
+    layers trainable when requested.
+    """
+    del n_top_layers
+
     if hasattr(model, "swin_backbone"):
         model.swin_backbone.trainable = backbone_trainable
         return
