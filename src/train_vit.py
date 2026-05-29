@@ -83,7 +83,7 @@ def main(args):
         backbone_name=args.backbone_name,
         use_model_augmentation=not args.disable_model_augmentation,
     )
-    model_vit(tf.zeros((1, 224, 224, 3), dtype=tf.float32), training=False)
+    model_vit(tf.zeros((1, 224, 224, 3), dtype=tf.float32), training=True)
     model_vit.summary()
 
     if args.smoke_test:
