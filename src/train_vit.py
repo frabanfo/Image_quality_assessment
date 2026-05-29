@@ -1,5 +1,5 @@
 """
-Dedicated training script for the pretrained DeiT-tiny regressor.
+Dedicated training script for the pretrained Swin-Tiny regressor.
 
 Run from the project root:
     python3 -m src.train_vit --phase1-epochs 3 --phase2-epochs 10
@@ -23,17 +23,17 @@ from src.models_vit_pretrained import (
 from src.train import train
 
 
-MODEL_NAME = "model_deit_tiny"
+MODEL_NAME = "model_swin_tiny"
 PHASE1_EPOCHS = 3
 PHASE2_EPOCHS = 10
-PHASE1_LR = 1e-3
+PHASE1_LR = 3e-4
 PHASE2_LR = 1e-5
 PATIENCE = 5
 SAVE_DIR = "checkpoints"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train the pretrained DeiT-tiny IQA regressor.")
+    parser = argparse.ArgumentParser(description="Train the pretrained Swin-Tiny IQA regressor.")
     parser.add_argument("--backbone-name", default=DEFAULT_BACKBONE, help="Hugging Face model id.")
     parser.add_argument("--phase1-epochs", type=int, default=PHASE1_EPOCHS)
     parser.add_argument("--phase2-epochs", type=int, default=PHASE2_EPOCHS)
@@ -45,6 +45,11 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--save-csv", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument(
+        "--disable-model-augmentation",
+        action="store_true",
+        help="Disable the local augmentation applied inside the Swin model.",
+    )
     return parser.parse_args()
 
 
@@ -74,14 +79,17 @@ def main(args):
         save_csv=args.save_csv,
     )
 
-    model_vit = build_model_vit(backbone_name=args.backbone_name)
+    model_vit = build_model_vit(
+        backbone_name=args.backbone_name,
+        use_model_augmentation=not args.disable_model_augmentation,
+    )
     model_vit(tf.zeros((1, 224, 224, 3), dtype=tf.float32), training=False)
     model_vit.summary()
 
     if args.smoke_test:
         for images, mos in train_ds.take(1):
             preds = model_vit(images, training=False)
-            print("\nSmoke test ViT pipeline:")
+            print("\nSmoke test Swin pipeline:")
             print("Images shape:", images.shape)
             print("MOS shape   :", mos.shape)
             print("Preds shape :", preds.shape)

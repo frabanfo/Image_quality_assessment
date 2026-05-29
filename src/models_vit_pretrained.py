@@ -1,5 +1,5 @@
 """
-Pretrained DeiT regressor based on Hugging Face DeiT-tiny.
+Pretrained Swin regressor based on Hugging Face Swin-Tiny.
 
 Why this file uses a subclassed Keras model instead of the Functional API:
 - Hugging Face TF backbones can reject Keras symbolic tensors (`KerasTensor`)
@@ -19,21 +19,21 @@ import tensorflow as tf
 from tensorflow import keras
 
 try:
-    from transformers import TFDeiTModel
-except ImportError:  # fallback for environments where TFDeiTModel is not exported
-    TFDeiTModel = None
+    from transformers import TFSwinModel
+except ImportError:  # fallback for environments where TFSwinModel is not exported
+    TFSwinModel = None
     from transformers import TFAutoModel
 
 layers = keras.layers
 
 
-DEFAULT_BACKBONE = "facebook/deit-tiny-patch16-224"
+DEFAULT_BACKBONE = "microsoft/swin-tiny-patch4-window7-224"
 IMAGE_MEAN = [0.485, 0.456, 0.406]
 IMAGE_STD = [0.229, 0.224, 0.225]
 
 
 def _normalize_for_transformer(images: tf.Tensor) -> tf.Tensor:
-    """Match the standard DeiT/ImageNet preprocessing."""
+    """Match the standard Swin/ImageNet preprocessing."""
     images = tf.cast(images, tf.float32) / 255.0
     mean = tf.constant(IMAGE_MEAN, dtype=tf.float32)
     std = tf.constant(IMAGE_STD, dtype=tf.float32)
@@ -43,56 +43,81 @@ def _normalize_for_transformer(images: tf.Tensor) -> tf.Tensor:
     return (images - mean) / std
 
 
-class PretrainedDeiTRegressor(keras.Model):
+class PretrainedSwinRegressor(keras.Model):
     """
-    DeiT-tiny backbone from Hugging Face plus a custom regression head.
+    Swin-Tiny backbone from Hugging Face plus a custom regression head.
 
-    The backbone is called at runtime on actual tensors, not on symbolic
-    KerasTensors created by the Functional API.
+    The model also includes local augmentation applied only during training,
+    before the backbone preprocessing.
     """
 
     def __init__(
         self,
         backbone_name: str = DEFAULT_BACKBONE,
         dropout: float = 0.3,
+        use_model_augmentation: bool = True,
         **kwargs,
     ):
-        super().__init__(name="ModelC_deit_tiny_regressor", **kwargs)
+        super().__init__(name="ModelC_swin_tiny_regressor", **kwargs)
         self.backbone_name = backbone_name
         self.dropout_rate = dropout
+        self.use_model_augmentation = use_model_augmentation
 
-        if TFDeiTModel is not None:
-            self.vit_backbone = TFDeiTModel.from_pretrained(
+        if TFSwinModel is not None:
+            self.swin_backbone = TFSwinModel.from_pretrained(
                 backbone_name,
-                name="vit_backbone",
+                name="swin_backbone",
             )
         else:
-            self.vit_backbone = TFAutoModel.from_pretrained(
+            self.swin_backbone = TFAutoModel.from_pretrained(
                 backbone_name,
-                name="vit_backbone",
+                name="swin_backbone",
             )
-        self.vit_backbone.trainable = False
+        self.swin_backbone.trainable = False
+
+        # Local augmentation kept inside the model to isolate experiments from
+        # the shared tf.data pipeline. Transformations stay moderate so they do
+        # not completely invalidate the MOS target.
+        self.model_augmentation = keras.Sequential(
+            [
+                layers.RandomFlip("horizontal"),
+                layers.RandomTranslation(0.05, 0.05),
+                layers.RandomRotation(0.03),
+                layers.RandomZoom(0.08),
+                layers.RandomContrast(0.10),
+            ],
+            name="swin_model_augmentation",
+        )
 
         self.regression_head = keras.Sequential(
             [
-                layers.Dense(256, activation="gelu"),
+                layers.Dense(192, activation="gelu"),
                 layers.Dropout(dropout),
                 layers.Dense(64, activation="gelu"),
                 layers.Dropout(dropout / 2),
                 layers.Dense(1, activation="linear"),
             ],
-            name="vit_regression_head",
+            name="swin_regression_head",
         )
 
     def call(self, inputs, training=False):
-        pixel_values = _normalize_for_transformer(inputs)
-        backbone_outputs = self.vit_backbone(
+        x = tf.cast(inputs, tf.float32)
+
+        if self.use_model_augmentation and training:
+            x = self.model_augmentation(x, training=training)
+
+        pixel_values = _normalize_for_transformer(x)
+        backbone_outputs = self.swin_backbone(
             pixel_values=pixel_values,
             training=training,
-        ).last_hidden_state
+        )
 
-        cls_token = backbone_outputs[:, 0]
-        return self.regression_head(cls_token, training=training)
+        if hasattr(backbone_outputs, "pooler_output") and backbone_outputs.pooler_output is not None:
+            features = backbone_outputs.pooler_output
+        else:
+            features = tf.reduce_mean(backbone_outputs.last_hidden_state, axis=1)
+
+        return self.regression_head(features, training=training)
 
     def get_config(self):
         config = super().get_config()
@@ -100,45 +125,36 @@ class PretrainedDeiTRegressor(keras.Model):
             {
                 "backbone_name": self.backbone_name,
                 "dropout": self.dropout_rate,
+                "use_model_augmentation": self.use_model_augmentation,
             }
         )
         return config
 
 
-def set_trainable_vit(
-    model: keras.Model,
-    backbone_trainable: bool,
-    n_top_layers: int | None = None,
-) -> None:
-    """Freeze or unfreeze the Hugging Face ViT backbone.
-
-    n_top_layers è ignorato: il backbone HuggingFace non espone i layer
-    interni con la stessa API di Keras, quindi il progressive unfreezing
-    avviene solo al livello backbone intero (congelato → scongelato).
-    """
-    if hasattr(model, "vit_backbone"):
-        model.vit_backbone.trainable = backbone_trainable
+def set_trainable_vit(model: keras.Model, backbone_trainable: bool) -> None:
+    """Freeze or unfreeze the Hugging Face Swin backbone."""
+    if hasattr(model, "swin_backbone"):
+        model.swin_backbone.trainable = backbone_trainable
         return
 
-    model.get_layer("vit_backbone").trainable = backbone_trainable
+    backbone = model.get_layer("swin_backbone")
+    backbone.trainable = backbone_trainable
 
 
 def build_model_vit(
     input_shape: tuple = (224, 224, 3),
     backbone_name: str = DEFAULT_BACKBONE,
     dropout: float = 0.3,
+    use_model_augmentation: bool = True,
 ) -> keras.Model:
     """
-    Build a pretrained DeiT regressor by replacing the classification head
-    with a lightweight regression head.
+    Build a pretrained Swin-Tiny regressor with an internal augmentation stage.
 
     `input_shape` is kept for API consistency with the other model builders.
-    The subclassed model is explicitly built with this shape so `summary()`
-    works immediately.
     """
     del input_shape
-    model = PretrainedDeiTRegressor(
+    return PretrainedSwinRegressor(
         backbone_name=backbone_name,
         dropout=dropout,
+        use_model_augmentation=use_model_augmentation,
     )
-    return model
