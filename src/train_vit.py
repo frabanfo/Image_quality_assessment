@@ -77,6 +77,7 @@ def main(args):
     train_ds, val_ds, test_ds = prepare_datasets(
         batch_size=args.batch_size,
         save_csv=args.save_csv,
+        use_augmentation=False,
     )
 
     model_vit = build_model_vit(

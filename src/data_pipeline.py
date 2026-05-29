@@ -152,7 +152,13 @@ def augment(image, mos):
     return image, mos
 
 
-def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False, return_std=False):
+def create_tf_dataset(
+    df,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    return_std=False,
+    use_augmentation=True,
+):
     """
     Converte un DataFrame in tf.data.Dataset.
 
@@ -180,7 +186,7 @@ def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False, return_std=False
     map_fn = load_image_with_std if return_std else load_image
     dataset = dataset.map(map_fn, num_parallel_calls=tf.data.AUTOTUNE)
 
-    if shuffle:
+    if shuffle and use_augmentation:
         if return_std:
             dataset = dataset.map(
                 lambda img, y: (augment(img, y[0])[0], y),
@@ -201,6 +207,7 @@ def prepare_datasets(
     save_csv=True,
     split_dir="Splits",
     return_std=False,
+    use_augmentation=True,
 ):
     """
     Funzione principale.
@@ -364,6 +371,7 @@ def prepare_datasets(
         batch_size=batch_size,
         shuffle=True,
         return_std=return_std,
+        use_augmentation=use_augmentation,
     )
 
     val_ds = create_tf_dataset(

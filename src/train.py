@@ -64,6 +64,7 @@ def _phase1(model, train_ds, val_ds, epochs, lr, set_trainable_fn):
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=lr),
         loss='mse',
+        run_eagerly=getattr(model, "run_eagerly_training", False),
     )
     srcc_cb = SRCCCallback(val_ds)
     return model.fit(
@@ -94,6 +95,7 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=lr),
         loss='mse',
+        run_eagerly=getattr(model, "run_eagerly_training", False),
     )
     h2a = model.fit(
         train_ds,
@@ -108,6 +110,7 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=lr / 10),
         loss='mse',
+        run_eagerly=getattr(model, "run_eagerly_training", False),
     )
 
     callbacks = [

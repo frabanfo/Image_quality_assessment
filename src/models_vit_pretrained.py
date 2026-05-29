@@ -43,6 +43,38 @@ def _normalize_for_transformer(images: tf.Tensor) -> tf.Tensor:
     return (images - mean) / std
 
 
+def _apply_local_augmentation(images: tf.Tensor) -> tf.Tensor:
+    """
+    Local augmentation for Swin using tf.image ops only.
+
+    This keeps the tensor shape explicit and stable, which is safer than
+    Keras preprocessing layers for HF TF backbones running through tf.function.
+    """
+    images = tf.image.random_flip_left_right(images)
+    images = tf.image.random_brightness(images, max_delta=12.0)
+    images = tf.image.random_contrast(images, lower=0.9, upper=1.1)
+    images = tf.image.random_saturation(images, lower=0.9, upper=1.1)
+
+    # Mild crop-resize jitter to simulate zoom/translation while preserving
+    # the fixed 224x224 spatial contract expected by the Swin backbone.
+    batch_size = tf.shape(images)[0]
+    crop_scale = tf.random.uniform((batch_size,), minval=0.88, maxval=1.0)
+    crop_size = tf.cast(crop_scale * tf.cast(tf.shape(images)[1], tf.float32), tf.int32)
+    crop_size = tf.maximum(crop_size, 1)
+
+    def _crop_single(args):
+        image, side = args
+        cropped = tf.image.random_crop(image, size=(side, side, 3))
+        return tf.image.resize(cropped, (tf.shape(images)[1], tf.shape(images)[2]))
+
+    images = tf.map_fn(
+        _crop_single,
+        (images, crop_size),
+        fn_output_signature=tf.float32,
+    )
+    return tf.clip_by_value(images, 0.0, 255.0)
+
+
 class PretrainedSwinRegressor(keras.Model):
     """
     Swin-Tiny backbone from Hugging Face plus a custom regression head.
@@ -62,6 +94,7 @@ class PretrainedSwinRegressor(keras.Model):
         self.backbone_name = backbone_name
         self.dropout_rate = dropout
         self.use_model_augmentation = use_model_augmentation
+        self.run_eagerly_training = True
 
         if TFSwinModel is not None:
             self.swin_backbone = TFSwinModel.from_pretrained(
@@ -80,20 +113,6 @@ class PretrainedSwinRegressor(keras.Model):
         else:
             self.image_size = int(image_size)
 
-        # Local augmentation kept inside the model to isolate experiments from
-        # the shared tf.data pipeline. Transformations stay moderate so they do
-        # not completely invalidate the MOS target.
-        self.model_augmentation = keras.Sequential(
-            [
-                layers.RandomFlip("horizontal"),
-                layers.RandomTranslation(0.05, 0.05),
-                layers.RandomRotation(0.03),
-                layers.RandomZoom(0.08),
-                layers.RandomContrast(0.10),
-            ],
-            name="swin_model_augmentation",
-        )
-
         self.regression_head = keras.Sequential(
             [
                 layers.Dense(192, activation="gelu"),
@@ -109,11 +128,8 @@ class PretrainedSwinRegressor(keras.Model):
         x = tf.cast(inputs, tf.float32)
 
         if self.use_model_augmentation and training:
-            x = self.model_augmentation(x, training=training)
+            x = _apply_local_augmentation(x)
 
-        # Keep a fixed spatial size for Swin. In graph mode the local
-        # augmentation stack can leave shape information too dynamic, which
-        # then breaks the backbone's window partition / reverse reshapes.
         x = tf.image.resize(x, (self.image_size, self.image_size))
         x = tf.ensure_shape(x, (None, self.image_size, self.image_size, 3))
 
