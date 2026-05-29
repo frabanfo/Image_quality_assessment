@@ -19,10 +19,10 @@ import tensorflow as tf
 from tensorflow import keras
 
 try:
-    from transformers import TFSwinModel
-except ImportError:  # fallback for environments where TFSwinModel is not exported
+    from transformers.models.swin.modeling_tf_swin import TFSwinModel
+except ImportError:  # fallback for environments where TFSwinModel is not importable
     TFSwinModel = None
-    from transformers import TFAutoModel
+    from transformers.models.auto.modeling_tf_auto import TFAutoModel
 
 layers = keras.layers
 
