@@ -37,9 +37,8 @@ def _normalize_for_transformer(images: tf.Tensor) -> tf.Tensor:
     images = tf.cast(images, tf.float32) / 255.0
     mean = tf.constant(IMAGE_MEAN, dtype=tf.float32)
     std = tf.constant(IMAGE_STD, dtype=tf.float32)
-    images = tf.transpose(images, perm=[0, 3, 1, 2])
-    mean = tf.reshape(mean, [1, 3, 1, 1])
-    std = tf.reshape(std, [1, 3, 1, 1])
+    mean = tf.reshape(mean, [1, 1, 1, 3])
+    std = tf.reshape(std, [1, 1, 1, 3])
     return (images - mean) / std
 
 
