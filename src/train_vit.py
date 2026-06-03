@@ -24,11 +24,11 @@ from src.train import train
 
 
 MODEL_NAME = "model_swin_tiny"
-PHASE1_EPOCHS = 3
-PHASE2_EPOCHS = 10
-PHASE1_LR = 3e-4
-PHASE2_LR = 1e-5
-PATIENCE = 5
+PHASE1_EPOCHS = 5
+PHASE2_EPOCHS = 30
+PHASE1_LR = 1e-3
+PHASE2_LR = 5e-6
+PATIENCE = 7
 SAVE_DIR = "checkpoints"
 
 
@@ -49,6 +49,18 @@ def parse_args():
         "--disable-model-augmentation",
         action="store_true",
         help="Disable the local augmentation applied inside the Swin model.",
+    )
+    parser.add_argument(
+        "--patches-per-image",
+        type=int,
+        default=0,
+        help="Random patches to extract per image (0 = disabled). When active, also pass --disable-model-augmentation.",
+    )
+    parser.add_argument(
+        "--patch-size",
+        type=int,
+        default=192,
+        help="Patch size in pixels for patch sampling (default: 192).",
     )
     return parser.parse_args()
 
@@ -78,6 +90,9 @@ def main(args):
         batch_size=args.batch_size,
         save_csv=args.save_csv,
         use_augmentation=False,
+        use_patch_sampling=args.patches_per_image > 0,
+        patches_per_image=args.patches_per_image,
+        patch_size=args.patch_size,
     )
 
     model_vit = build_model_vit(
@@ -108,6 +123,7 @@ def main(args):
         patience=args.patience,
         save_dir=args.save_dir,
         set_trainable_fn=set_trainable_vit,
+        phase2a_n_top_layers=2,
     )
 
     evaluate_on_test(model_vit, test_ds)

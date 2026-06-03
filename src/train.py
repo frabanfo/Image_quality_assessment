@@ -76,7 +76,7 @@ def _phase1(model, train_ds, val_ds, epochs, lr, set_trainable_fn):
     )
 
 
-def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_trainable_fn):
+def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_trainable_fn, phase2a_n_top_layers: int = 30):
     """
     Fine-tuning progressivo in due sub-fasi:
 
@@ -90,8 +90,8 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
     warmup_epochs = min(max(5, epochs // 4), epochs)
     remaining_epochs = epochs - warmup_epochs
 
-    # ---- Phase 2a: top-30 layer only ----------------------------------------
-    set_trainable_fn(model, backbone_trainable=True, n_top_layers=30)
+    # ---- Phase 2a: top-N layers/stages only ---------------------------------
+    set_trainable_fn(model, backbone_trainable=True, n_top_layers=phase2a_n_top_layers)
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=lr),
         loss='mse',
@@ -166,6 +166,7 @@ def train(
     patience: int = 7,
     save_dir: str = 'checkpoints',
     set_trainable_fn=set_trainable,
+    phase2a_n_top_layers: int = 30,
 ):
     """
     Pipeline completa di training in 2 fasi.
@@ -199,7 +200,7 @@ def train(
     print(f"  Early stopping: patience={patience} su val_srcc")
     print(f"{'='*55}")
     h2a, h2b = _phase2(model, train_ds, val_ds, phase2_epochs, phase2_lr, patience,
-                       save_path, set_trainable_fn)
+                       save_path, set_trainable_fn, phase2a_n_top_layers=phase2a_n_top_layers)
 
     print(f"\nModello migliore salvato in: {save_path}")
     return h1, h2a, h2b

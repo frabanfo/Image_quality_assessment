@@ -138,6 +138,19 @@ def load_image_with_std(image_path, mos, std):
     return image, tf.stack([mos_norm, std_norm])
 
 
+def extract_random_patch(image: tf.Tensor, mos: tf.Tensor, patch_size: int = 192):
+    """Crop a random patch from image and resize to 224×224, keeping the MOS label."""
+    h = tf.shape(image)[0]
+    w = tf.shape(image)[1]
+    max_y = tf.maximum(h - patch_size, 0)
+    max_x = tf.maximum(w - patch_size, 0)
+    y = tf.random.uniform((), 0, tf.maximum(max_y, 1), dtype=tf.int32)
+    x = tf.random.uniform((), 0, tf.maximum(max_x, 1), dtype=tf.int32)
+    patch = image[y : y + patch_size, x : x + patch_size, :]
+    patch = tf.image.resize(patch, [IMG_SIZE, IMG_SIZE])
+    return patch, mos
+
+
 def augment(image, mos):
     """
     Augmentation leggera per IQA: solo trasformazioni che non alterano
@@ -158,12 +171,18 @@ def create_tf_dataset(
     shuffle=False,
     return_std=False,
     use_augmentation=True,
+    use_patch_sampling: bool = False,
+    patches_per_image: int = 4,
+    patch_size: int = 192,
 ):
     """
     Converte un DataFrame in tf.data.Dataset.
 
     return_std=False  → emette (image, mos_norm)
     return_std=True   → emette (image, [mos_norm, std_norm]) — per WeightedMSELoss
+
+    use_patch_sampling: if True (and shuffle=True, return_std=False), extract
+    patches_per_image random patches per image via flat_map for augmentation.
     """
     image_paths = df["image_path"].values
     mos_values = df["mos"].values
@@ -185,6 +204,15 @@ def create_tf_dataset(
 
     map_fn = load_image_with_std if return_std else load_image
     dataset = dataset.map(map_fn, num_parallel_calls=tf.data.AUTOTUNE)
+
+    if shuffle and use_patch_sampling and not return_std:
+        _ps = patch_size
+        _n = patches_per_image
+        dataset = dataset.flat_map(
+            lambda img, mos: tf.data.Dataset.from_tensors((img, mos))
+            .repeat(_n)
+            .map(lambda i, m: extract_random_patch(i, m, patch_size=_ps))
+        )
 
     if shuffle and use_augmentation:
         if return_std:
@@ -208,6 +236,9 @@ def prepare_datasets(
     split_dir="Splits",
     return_std=False,
     use_augmentation=True,
+    use_patch_sampling: bool = False,
+    patches_per_image: int = 4,
+    patch_size: int = 192,
 ):
     """
     Funzione principale.
@@ -372,6 +403,9 @@ def prepare_datasets(
         shuffle=True,
         return_std=return_std,
         use_augmentation=use_augmentation,
+        use_patch_sampling=use_patch_sampling,
+        patches_per_image=patches_per_image,
+        patch_size=patch_size,
     )
 
     val_ds = create_tf_dataset(

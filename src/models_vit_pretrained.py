@@ -115,11 +115,13 @@ class PretrainedSwinRegressor(keras.Model):
 
         self.regression_head = keras.Sequential(
             [
-                layers.Dense(192, activation="gelu"),
+                layers.Dense(256, activation="gelu",
+                             kernel_regularizer=keras.regularizers.l2(1e-4)),
                 layers.Dropout(dropout),
-                layers.Dense(64, activation="gelu"),
+                layers.Dense(64, activation="gelu",
+                             kernel_regularizer=keras.regularizers.l2(1e-4)),
                 layers.Dropout(dropout / 2),
-                layers.Dense(1, activation="linear"),
+                layers.Dense(1, activation="sigmoid"),
             ],
             name="swin_regression_head",
         )
@@ -166,18 +168,34 @@ def set_trainable_vit(
     """
     Freeze or unfreeze the Hugging Face Swin backbone.
 
-    `train.py` can optionally ask for partial unfreezing via `n_top_layers`.
-    For HF backbones we implement this by leaving only the last N backbone
-    layers trainable when requested.
+    n_top_layers: if set, freezes all encoder stages except the last n_top_layers.
+    Swin-Tiny has 4 stages [2, 2, 6, 2 blocks]; n_top_layers=2 unfreezes stage_2+stage_3.
+    Pass None to unfreeze the entire backbone (Phase 2b).
     """
-    del n_top_layers
-
     if hasattr(model, "swin_backbone"):
-        model.swin_backbone.trainable = backbone_trainable
-        return
+        backbone = model.swin_backbone
+    else:
+        backbone = model.get_layer("swin_backbone")
 
-    backbone = model.get_layer("swin_backbone")
     backbone.trainable = backbone_trainable
+
+    if backbone_trainable and n_top_layers is not None:
+        for layer in backbone.layers:
+            layer.trainable = False
+
+        try:
+            # TFSwinModel wraps layers in .swin (TFSwinMainLayer); fall back to direct access
+            swin_main = backbone.swin if hasattr(backbone, "swin") else backbone
+            encoder_stages = swin_main.encoder.layers
+            n_stages = len(encoder_stages)
+            n_freeze = max(0, n_stages - n_top_layers)
+            for stage in encoder_stages[n_freeze:]:
+                stage.trainable = True
+            swin_main.layernorm.trainable = True
+            if hasattr(swin_main, "pooler"):
+                swin_main.pooler.trainable = True
+        except AttributeError:
+            backbone.trainable = True  # fallback: full unfreeze
 
 
 def build_model_vit(

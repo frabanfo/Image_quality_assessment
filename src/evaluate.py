@@ -51,8 +51,12 @@ def build_or_load_model(model_name: str, checkpoint: str | None = None) -> keras
         model = build_model_a()
     elif model_name == "b":
         model = build_model_b()
+    elif model_name in ("swin", "vit"):
+        from src.models_vit_pretrained import build_model_vit
+        model = build_model_vit()
+        model(tf.zeros((1, 224, 224, 3), dtype=tf.float32), training=False)
     else:
-        raise ValueError(f"Unsupported model '{model_name}'. Use 'a' or 'b'.")
+        raise ValueError(f"Unsupported model '{model_name}'. Use 'a', 'b', or 'swin'.")
 
     if checkpoint:
         if checkpoint.endswith(".weights.h5"):
@@ -445,9 +449,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate an IQA model on the test split.")
     parser.add_argument(
         "--model",
-        choices=["a", "b"],
+        choices=["a", "b", "swin"],
         default="a",
-        help="Architecture: a=baseline CNN, b=multi-scale CNN",
+        help="Architecture: a=baseline CNN, b=multi-scale CNN, swin=Swin-Tiny",
     )
     parser.add_argument("--checkpoint", default=None,
                         help="Path to .weights.h5 or saved .keras model")
@@ -465,7 +469,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    label = f"Model {'A' if args.model == 'a' else 'B'}"
+    label_map = {"a": "Model A", "b": "Model B", "swin": "Model Swin-Tiny"}
+    label = label_map.get(args.model, f"Model {args.model.upper()}")
     output_dir = args.output_dir or os.path.join("results", f"model_{args.model}")
 
     # save_csv=True ensures Splits/test.csv exists for std alignment
@@ -489,7 +494,7 @@ def main() -> None:
         output_dir=output_dir,
         label=label,
         max_batches=args.max_batches,
-        gradcam=not args.no_gradcam,
+        gradcam=not args.no_gradcam and args.model != "swin",
     )
 
 
