@@ -58,14 +58,25 @@ class SRCCCallback(keras.callbacks.Callback):
 # Fasi di training
 # ---------------------------------------------------------------------------
 
-def _phase1(model, train_ds, val_ds, epochs, lr, set_trainable_fn):
+def _default_optimizer(lr: float) -> keras.optimizers.Optimizer:
+    return keras.optimizers.Adam(learning_rate=lr)
+
+
+def _log_trainable_params(model, phase_label: str) -> None:
+    """Sanity check: il numero di pesi allenabili deve cambiare tra le fasi."""
+    n_params = sum(int(tf.size(w)) for w in model.trainable_weights)
+    print(f"[{phase_label}] trainable params: {n_params:,}")
+
+
+def _phase1(model, train_ds, val_ds, epochs, lr, set_trainable_fn, make_optimizer):
     """Backbone congelato — allena solo la testa di regressione."""
     set_trainable_fn(model, backbone_trainable=False)
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=lr),
+        optimizer=make_optimizer(lr),
         loss='mse',
         run_eagerly=getattr(model, "run_eagerly_training", False),
     )
+    _log_trainable_params(model, "Phase 1")
     srcc_cb = SRCCCallback(val_ds)
     return model.fit(
         train_ds,
@@ -76,7 +87,9 @@ def _phase1(model, train_ds, val_ds, epochs, lr, set_trainable_fn):
     )
 
 
-def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_trainable_fn, phase2a_n_top_layers: int = 30):
+def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_trainable_fn,
+            phase2a_n_top_layers: int = 30, phase2b_lr: float | None = None,
+            make_optimizer=_default_optimizer):
     """
     Fine-tuning progressivo in due sub-fasi:
 
@@ -84,19 +97,23 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
          LR invariato, niente early stopping. Adatta le feature di alto
          livello prima di toccare i layer più profondi.
 
-    2b — sblocca l'intero backbone con LR/10, early stopping su val_srcc.
-         LR ridotto per non distruggere le feature di basso livello.
+    2b — sblocca l'intero backbone con LR ridotto (phase2b_lr, default LR/10),
+         early stopping su val_srcc. LR ridotto per non distruggere le
+         feature di basso livello.
     """
     warmup_epochs = min(max(5, epochs // 4), epochs)
     remaining_epochs = epochs - warmup_epochs
+    if phase2b_lr is None:
+        phase2b_lr = lr / 10
 
     # ---- Phase 2a: top-N layers/stages only ---------------------------------
     set_trainable_fn(model, backbone_trainable=True, n_top_layers=phase2a_n_top_layers)
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=lr),
+        optimizer=make_optimizer(lr),
         loss='mse',
         run_eagerly=getattr(model, "run_eagerly_training", False),
     )
+    _log_trainable_params(model, "Phase 2a")
     h2a = model.fit(
         train_ds,
         epochs=warmup_epochs,
@@ -108,10 +125,11 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
     # ---- Phase 2b: full backbone, lower LR, early stopping ------------------
     set_trainable_fn(model, backbone_trainable=True)
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=lr / 10),
+        optimizer=make_optimizer(phase2b_lr),
         loss='mse',
         run_eagerly=getattr(model, "run_eagerly_training", False),
     )
+    _log_trainable_params(model, "Phase 2b")
 
     callbacks = [
         SRCCCallback(val_ds),
@@ -167,6 +185,8 @@ def train(
     save_dir: str = 'checkpoints',
     set_trainable_fn=set_trainable,
     phase2a_n_top_layers: int = 30,
+    phase2b_lr: float | None = None,
+    make_optimizer=_default_optimizer,
 ):
     """
     Pipeline completa di training in 2 fasi.
@@ -179,10 +199,12 @@ def train(
         phase1_epochs   : epoche fase 1 (solo testa)
         phase2_epochs   : epoche massime fase 2 (interrotto da early stopping)
         phase1_lr       : learning rate fase 1
-        phase2_lr       : learning rate fase 2
+        phase2_lr       : learning rate fase 2a
         patience        : epoche senza miglioramento su val_srcc prima dello stop
         save_dir        : cartella dove salvare il modello migliore
         set_trainable_fn: usa set_trainable per ModelA, set_trainable_b per ModelB
+        phase2b_lr      : learning rate fase 2b (default: phase2_lr / 10)
+        make_optimizer  : factory lr -> optimizer (default Adam; AdamW per Swin)
 
     Returns:
         (history_phase1, history_phase2)
@@ -193,14 +215,18 @@ def train(
     print(f"\n{'='*55}")
     print(f"  Phase 1 — head only  ({phase1_epochs} epochs, lr={phase1_lr})")
     print(f"{'='*55}")
-    h1 = _phase1(model, train_ds, val_ds, phase1_epochs, phase1_lr, set_trainable_fn)
+    h1 = _phase1(model, train_ds, val_ds, phase1_epochs, phase1_lr, set_trainable_fn,
+                 make_optimizer)
 
     print(f"\n{'='*55}")
     print(f"  Phase 2 — full fine-tuning  (max {phase2_epochs} epochs, lr={phase2_lr})")
     print(f"  Early stopping: patience={patience} su val_srcc")
     print(f"{'='*55}")
     h2a, h2b = _phase2(model, train_ds, val_ds, phase2_epochs, phase2_lr, patience,
-                       save_path, set_trainable_fn, phase2a_n_top_layers=phase2a_n_top_layers)
+                       save_path, set_trainable_fn,
+                       phase2a_n_top_layers=phase2a_n_top_layers,
+                       phase2b_lr=phase2b_lr,
+                       make_optimizer=make_optimizer)
 
     print(f"\nModello migliore salvato in: {save_path}")
     return h1, h2a, h2b

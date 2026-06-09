@@ -171,6 +171,10 @@ def set_trainable_vit(
     n_top_layers: if set, freezes all encoder stages except the last n_top_layers.
     Swin-Tiny has 4 stages [2, 2, 6, 2 blocks]; n_top_layers=2 unfreezes stage_2+stage_3.
     Pass None to unfreeze the entire backbone (Phase 2b).
+
+    Keras ignores trainable=True on a child whose ancestor has trainable=False,
+    so partial unfreezing must keep the backbone trainable and freeze the
+    lower children individually — never the other way around.
     """
     if hasattr(model, "swin_backbone"):
         backbone = model.swin_backbone
@@ -180,20 +184,15 @@ def set_trainable_vit(
     backbone.trainable = backbone_trainable
 
     if backbone_trainable and n_top_layers is not None:
-        for layer in backbone.layers:
-            layer.trainable = False
-
         try:
             # TFSwinModel wraps layers in .swin (TFSwinMainLayer); fall back to direct access
             swin_main = backbone.swin if hasattr(backbone, "swin") else backbone
+            swin_main.embeddings.trainable = False
             encoder_stages = swin_main.encoder.layers
             n_stages = len(encoder_stages)
             n_freeze = max(0, n_stages - n_top_layers)
-            for stage in encoder_stages[n_freeze:]:
-                stage.trainable = True
-            swin_main.layernorm.trainable = True
-            if hasattr(swin_main, "pooler"):
-                swin_main.pooler.trainable = True
+            for stage in encoder_stages[:n_freeze]:
+                stage.trainable = False
         except AttributeError:
             backbone.trainable = True  # fallback: full unfreeze
 

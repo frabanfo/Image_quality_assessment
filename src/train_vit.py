@@ -13,6 +13,7 @@ os.environ.setdefault("KERAS_HOME", str(Path(__file__).resolve().parents[1] / ".
 
 from scipy.stats import pearsonr, spearmanr
 import tensorflow as tf
+from tensorflow import keras
 
 from src.data_pipeline import prepare_datasets
 from src.models_vit_pretrained import (
@@ -27,9 +28,25 @@ MODEL_NAME = "model_swin_tiny"
 PHASE1_EPOCHS = 5
 PHASE2_EPOCHS = 30
 PHASE1_LR = 1e-3
-PHASE2_LR = 5e-6
+PHASE2_LR = 2e-5    # Phase 2a — fine-tuning transformer: 1e-5–3e-5 è il range tipico
+PHASE2B_LR = 1e-5   # Phase 2b — full backbone (il vecchio lr/10 = 5e-7 era troppo basso)
 PATIENCE = 7
 SAVE_DIR = "checkpoints"
+
+
+def make_swin_optimizer(lr: float) -> keras.optimizers.Optimizer:
+    """AdamW con weight decay disaccoppiato + gradient clipping per il backbone Swin."""
+    optimizer = keras.optimizers.AdamW(
+        learning_rate=lr,
+        weight_decay=1e-4,
+        clipnorm=1.0,
+    )
+    if hasattr(optimizer, "exclude_from_weight_decay"):
+        # Convenzione standard per transformer: niente decay su bias e LayerNorm
+        optimizer.exclude_from_weight_decay(
+            var_names=["bias", "gamma", "beta", "layernorm", "layer_norm"]
+        )
+    return optimizer
 
 
 def parse_args():
@@ -39,6 +56,7 @@ def parse_args():
     parser.add_argument("--phase2-epochs", type=int, default=PHASE2_EPOCHS)
     parser.add_argument("--phase1-lr", type=float, default=PHASE1_LR)
     parser.add_argument("--phase2-lr", type=float, default=PHASE2_LR)
+    parser.add_argument("--phase2b-lr", type=float, default=PHASE2B_LR)
     parser.add_argument("--patience", type=int, default=PATIENCE)
     parser.add_argument("--save-dir", default=SAVE_DIR)
     parser.add_argument("--model-name", default=MODEL_NAME)
@@ -124,6 +142,8 @@ def main(args):
         save_dir=args.save_dir,
         set_trainable_fn=set_trainable_vit,
         phase2a_n_top_layers=2,
+        phase2b_lr=args.phase2b_lr,
+        make_optimizer=make_swin_optimizer,
     )
 
     evaluate_on_test(model_vit, test_ds)

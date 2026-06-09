@@ -21,6 +21,7 @@ env/
 ENV/
 .claude/
 context/
+.md
 
 # Packaging and build outputs
 build/
