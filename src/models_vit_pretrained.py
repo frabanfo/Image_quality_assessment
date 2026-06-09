@@ -88,13 +88,16 @@ class PretrainedSwinRegressor(keras.Model):
         backbone_name: str = DEFAULT_BACKBONE,
         dropout: float = 0.3,
         use_model_augmentation: bool = True,
+        run_eagerly: bool = False,
         **kwargs,
     ):
         super().__init__(name="ModelC_swin_tiny_regressor", **kwargs)
         self.backbone_name = backbone_name
         self.dropout_rate = dropout
         self.use_model_augmentation = use_model_augmentation
-        self.run_eagerly_training = True
+        # Graph mode di default (5-10x più veloce); run_eagerly=True è il
+        # fallback se il backbone HF non riesce a tracciare sotto tf.function.
+        self.run_eagerly_training = run_eagerly
 
         if TFSwinModel is not None:
             self.swin_backbone = TFSwinModel.from_pretrained(
@@ -155,6 +158,7 @@ class PretrainedSwinRegressor(keras.Model):
                 "backbone_name": self.backbone_name,
                 "dropout": self.dropout_rate,
                 "use_model_augmentation": self.use_model_augmentation,
+                "run_eagerly": self.run_eagerly_training,
             }
         )
         return config
@@ -202,6 +206,7 @@ def build_model_vit(
     backbone_name: str = DEFAULT_BACKBONE,
     dropout: float = 0.3,
     use_model_augmentation: bool = True,
+    run_eagerly: bool = False,
 ) -> keras.Model:
     """
     Build a pretrained Swin-Tiny regressor with an internal augmentation stage.
@@ -213,4 +218,5 @@ def build_model_vit(
         backbone_name=backbone_name,
         dropout=dropout,
         use_model_augmentation=use_model_augmentation,
+        run_eagerly=run_eagerly,
     )

@@ -49,6 +49,8 @@ def build_or_load_model(model_name: str, checkpoint: str | None = None) -> keras
 
     if model_name == "a":
         model = build_model_a()
+    elif model_name == "v2s":
+        model = build_model_a(backbone="v2s")
     elif model_name == "b":
         model = build_model_b()
     elif model_name in ("swin", "vit"):
@@ -56,7 +58,7 @@ def build_or_load_model(model_name: str, checkpoint: str | None = None) -> keras
         model = build_model_vit()
         model(tf.zeros((1, 224, 224, 3), dtype=tf.float32), training=False)
     else:
-        raise ValueError(f"Unsupported model '{model_name}'. Use 'a', 'b', or 'swin'.")
+        raise ValueError(f"Unsupported model '{model_name}'. Use 'a', 'b', 'v2s', or 'swin'.")
 
     if checkpoint:
         if checkpoint.endswith(".weights.h5"):
@@ -254,10 +256,10 @@ def _build_gradcam_model(model: keras.Model, model_type: str) -> keras.Model:
     """
     Dual-output model returning (conv_features, prediction) for Grad-CAM.
 
-    Model A: last spatial tensor before GAP is gap.input     (B, 7, 7, 1280)
-    Model B: top-scale branch before GAP is gap_top.input    (B, 7, 7, 1280)
+    Model A / V2S: last spatial tensor before GAP is gap.input  (B, 7, 7, 1280)
+    Model B: top-scale branch before GAP is gap_top.input       (B, 7, 7, 1280)
     """
-    if model_type == "a":
+    if model_type in ("a", "v2s"):
         conv_tensor = model.get_layer("gap").input
     elif model_type == "b":
         conv_tensor = model.get_layer("gap_top").input
@@ -449,9 +451,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate an IQA model on the test split.")
     parser.add_argument(
         "--model",
-        choices=["a", "b", "swin"],
+        choices=["a", "b", "v2s", "swin"],
         default="a",
-        help="Architecture: a=baseline CNN, b=multi-scale CNN, swin=Swin-Tiny",
+        help="Architecture: a=baseline CNN, b=multi-scale CNN, v2s=EfficientNetV2-S, swin=Swin-Tiny",
     )
     parser.add_argument("--checkpoint", default=None,
                         help="Path to .weights.h5 or saved .keras model")
@@ -469,7 +471,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    label_map = {"a": "Model A", "b": "Model B", "swin": "Model Swin-Tiny"}
+    label_map = {"a": "Model A", "b": "Model B", "v2s": "Model A (EfficientNetV2-S)", "swin": "Model Swin-Tiny"}
     label = label_map.get(args.model, f"Model {args.model.upper()}")
     output_dir = args.output_dir or os.path.join("results", f"model_{args.model}")
 

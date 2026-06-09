@@ -58,11 +58,19 @@ def parse_args():
     parser.add_argument("--phase2-lr", type=float, default=PHASE2_LR)
     parser.add_argument("--phase2b-lr", type=float, default=PHASE2B_LR)
     parser.add_argument("--patience", type=int, default=PATIENCE)
+    parser.add_argument("--plcc-weight", type=float, default=0.5,
+                        help="Peso del termine 1−PLCC nella loss (0 = MSE pura)")
     parser.add_argument("--save-dir", default=SAVE_DIR)
     parser.add_argument("--model-name", default=MODEL_NAME)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--save-csv", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument(
+        "--run-eagerly",
+        action="store_true",
+        help="Fallback: esegui il training in eager mode (lento) se il "
+             "backbone HF non funziona in graph mode.",
+    )
     parser.add_argument(
         "--disable-model-augmentation",
         action="store_true",
@@ -116,6 +124,7 @@ def main(args):
     model_vit = build_model_vit(
         backbone_name=args.backbone_name,
         use_model_augmentation=not args.disable_model_augmentation,
+        run_eagerly=args.run_eagerly,
     )
     model_vit(tf.zeros((1, 224, 224, 3), dtype=tf.float32), training=True)
     model_vit.summary()
@@ -144,6 +153,7 @@ def main(args):
         phase2a_n_top_layers=2,
         phase2b_lr=args.phase2b_lr,
         make_optimizer=make_swin_optimizer,
+        plcc_weight=args.plcc_weight,
     )
 
     evaluate_on_test(model_vit, test_ds)

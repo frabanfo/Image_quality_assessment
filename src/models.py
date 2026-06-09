@@ -36,6 +36,26 @@ def _regression_head(x: tf.Tensor, dropout: float = 0.3, l2: float = 1e-4) -> tf
     return x
 
 
+# Backbone disponibili per build_model_a: builder + nome del layer Keras.
+# I nomi layer restano quelli di default di keras.applications, così i
+# checkpoint .weights.h5 già salvati continuano a caricarsi per nome.
+_BACKBONES = {
+    "b0": (keras.applications.EfficientNetB0, "efficientnetb0"),
+    "v2s": (keras.applications.EfficientNetV2S, "efficientnetv2-s"),
+}
+
+
+def _find_backbone(model: keras.Model) -> keras.Model:
+    for _, layer_name in _BACKBONES.values():
+        try:
+            return model.get_layer(layer_name)
+        except ValueError:
+            continue
+    raise ValueError(
+        f"Nessun backbone riconosciuto nel modello: attesi {[n for _, n in _BACKBONES.values()]}"
+    )
+
+
 def set_trainable(
     model: keras.Model,
     backbone_trainable: bool,
@@ -48,35 +68,48 @@ def set_trainable(
     n_top_layers — useful for progressive unfreezing (Phase 2a).
     Pass None (default) to unfreeze the entire backbone (Phase 2b).
     """
-    backbone = model.get_layer("efficientnetb0")
+    backbone = _find_backbone(model)
     backbone.trainable = backbone_trainable
     if backbone_trainable and n_top_layers is not None:
         for layer in backbone.layers[:-n_top_layers]:
             layer.trainable = False
 
 
-def build_model_a(input_shape: tuple = (224, 224, 3), dropout: float = 0.3) -> keras.Model:
+def build_model_a(
+    input_shape: tuple = (224, 224, 3),
+    dropout: float = 0.3,
+    backbone: str = "b0",
+) -> keras.Model:
     """
-    EfficientNetB0 pretrained on ImageNet with a single regression head.
+    EfficientNet pretrained on ImageNet with a single regression head.
+
+    backbone: "b0" (EfficientNetB0, default) or "v2s" (EfficientNetV2-S).
+    Both keras.applications variants include preprocessing/rescaling inside
+    the model and expect inputs in [0, 255] — same data pipeline contract.
 
     Fine-tuning workflow:
       Phase 1 - set_trainable(model, backbone_trainable=False), LR ~1e-3
       Phase 2 - set_trainable(model, backbone_trainable=True),  LR ~1e-5
     """
+    if backbone not in _BACKBONES:
+        raise ValueError(f"backbone '{backbone}' non supportato: usa {list(_BACKBONES)}")
+    builder, _ = _BACKBONES[backbone]
+
     inputs = keras.Input(shape=input_shape, name="image")
 
-    backbone = keras.applications.EfficientNetB0(
+    backbone_model = builder(
         include_top=False,
         weights="imagenet",
         input_shape=input_shape,
     )
-    backbone.trainable = False
+    backbone_model.trainable = False
 
-    x = backbone(inputs, training=False)
+    x = backbone_model(inputs, training=False)
     x = layers.GlobalAveragePooling2D(name="gap")(x)                 # (B, 1280)
     outputs = _regression_head(x, dropout=dropout)                    # (B, 1)
 
-    return keras.Model(inputs=inputs, outputs=outputs, name="ModelA_baseline")
+    name = "ModelA_baseline" if backbone == "b0" else f"ModelA_{backbone}"
+    return keras.Model(inputs=inputs, outputs=outputs, name=name)
 
 
 def build_model_b(dropout: float = 0.3) -> keras.Model:
