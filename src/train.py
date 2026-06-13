@@ -91,6 +91,10 @@ def make_iqa_loss(plcc_weight: float = 0.0):
             yp_c = yp - tf.reduce_mean(yp)
             denom = tf.norm(yt_c) * tf.norm(yp_c) + 1e-8
             plcc = tf.reduce_sum(yt_c * yp_c) / denom
+            # Clip al range matematico del PLCC: con norma delle predizioni ~0
+            # (output quasi costante a inizio training) il rapporto può esplodere
+            # a causa dell'epsilon → loss enorme → gradiente NaN.
+            plcc = tf.clip_by_value(plcc, -1.0, 1.0)
             loss += plcc_weight * (1.0 - plcc)
         return loss
 
@@ -300,9 +304,17 @@ def parse_args():
     parser.add_argument("--plcc-weight", type=float, default=0.0,
                         help="Peso del termine 1−PLCC nella loss (0 = MSE pura)")
     parser.add_argument("--patches-per-image", type=int, default=0,
-                        help="Patch casuali estratte per immagine (0 = disattivato)")
-    parser.add_argument("--patch-size", type=int, default=192,
-                        help="Lato del patch in pixel (default: 192)")
+                        help="Crop nativi per immagine (0 = disattivato). I crop sono presi "
+                             "dall'originale a risoluzione piena, poi resize a img-size — "
+                             "stile DeepBIQ.")
+    parser.add_argument("--patch-crop-frac", type=float, default=0.7,
+                        help="Lato del crop nativo come frazione del lato originale (default 0.7)")
+    parser.add_argument("--patch-exact", action="store_true",
+                        help="Crop esatto img-size×img-size dai pixel nativi, nessun resize "
+                             "(DeepBIQ puro). Ignora --patch-crop-frac.")
+    parser.add_argument("--flip-augment", action="store_true",
+                        help="Applica solo il flip orizzontale (augmentation IQA-safe), "
+                             "invece del jitter fotometrico completo.")
     parser.add_argument("--img-size", type=int, default=224,
                         help="Risoluzione di input (default: 224)")
     parser.add_argument("--no-augmentation", action="store_true",
@@ -336,7 +348,9 @@ if __name__ == '__main__':
         use_augmentation=not args.no_augmentation,
         use_patch_sampling=args.patches_per_image > 0,
         patches_per_image=args.patches_per_image,
-        patch_size=args.patch_size,
+        patch_crop_frac=args.patch_crop_frac,
+        patch_exact=args.patch_exact,
+        flip_only=args.flip_augment,
         img_size=args.img_size,
     )
 

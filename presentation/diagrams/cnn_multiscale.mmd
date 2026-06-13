@@ -1,0 +1,20 @@
+flowchart LR
+  IMG["Input<br/>384×384×3"] --> BB["EfficientNetV2-S<br/>(ImageNet)"]
+  BB --> L["block3d_add (/8)<br/>texture / distorsioni locali"]
+  BB --> M["block5i_add (/16)<br/>strutture"]
+  BB --> T["top_activation (/32)<br/>semantica globale"]
+  L --> GL["GAP"]
+  M --> GM["GAP"]
+  T --> GT["GAP"]
+  GL --> C["Concat<br/>feature multi-scala"]
+  GM --> C
+  GT --> C
+  C --> H["Testa di regressione<br/>Dense 512 → 256 → 1 (sigmoid)"]
+  H --> O["MOS ∈ [0,1]"]
+
+  classDef bb fill:#cfe3ff,stroke:#3b6ea5,stroke-width:2px;
+  classDef tap fill:#fff2cc,stroke:#cc9a06,stroke-width:1.5px;
+  classDef head fill:#d8f5d0,stroke:#3a8f2a,stroke-width:2px;
+  class BB bb;
+  class L,M,T tap;
+  class H,O head;

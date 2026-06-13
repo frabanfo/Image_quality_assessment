@@ -104,13 +104,17 @@ def parse_args():
         "--patches-per-image",
         type=int,
         default=0,
-        help="Random patches to extract per image (0 = disabled). When active, also pass --disable-model-augmentation.",
+        help="Native crops to extract per image (0 = disabled). When active, also pass --disable-model-augmentation.",
     )
     parser.add_argument(
-        "--patch-size",
-        type=int,
-        default=192,
-        help="Patch size in pixels for patch sampling (default: 192).",
+        "--patch-exact",
+        action="store_true",
+        help="Crop esatto img-size×img-size dai pixel nativi, nessun resize (DeepBIQ puro).",
+    )
+    parser.add_argument(
+        "--flip-augment",
+        action="store_true",
+        help="Applica solo il flip orizzontale in pipeline (augmentation IQA-safe).",
     )
     parser.add_argument(
         "--img-size",
@@ -150,7 +154,8 @@ def main(args):
         use_augmentation=False,
         use_patch_sampling=args.patches_per_image > 0,
         patches_per_image=args.patches_per_image,
-        patch_size=args.patch_size,
+        patch_exact=args.patch_exact,
+        flip_only=args.flip_augment,
         img_size=args.img_size,
     )
 
