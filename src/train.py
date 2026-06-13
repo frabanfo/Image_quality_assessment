@@ -286,28 +286,42 @@ def train(
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=["a", "b", "v2s"], default="a",
-                        help="a=EfficientNetB0, b=B0 multi-scala, v2s=EfficientNetV2-S")
+    parser.add_argument("--model", choices=["a", "b", "v2s", "bv2s"], default="a",
+                        help="a=EfficientNetB0, b=B0 multi-scala, v2s=EfficientNetV2-S, "
+                             "bv2s=V2S multi-scala")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--phase1-epochs", type=int, default=5)
     parser.add_argument("--phase2-epochs", type=int, default=30)
     parser.add_argument("--phase1-lr", type=float, default=1e-3)
     parser.add_argument("--phase2-lr", type=float, default=1e-5)
+    parser.add_argument("--phase2b-lr", type=float, default=None,
+                        help="LR per la Phase 2b (default: phase2-lr / 10)")
     parser.add_argument("--patience", type=int, default=7)
     parser.add_argument("--plcc-weight", type=float, default=0.0,
                         help="Peso del termine 1−PLCC nella loss (0 = MSE pura)")
+    parser.add_argument("--patches-per-image", type=int, default=0,
+                        help="Patch casuali estratte per immagine (0 = disattivato)")
+    parser.add_argument("--patch-size", type=int, default=192,
+                        help="Lato del patch in pixel (default: 192)")
+    parser.add_argument("--img-size", type=int, default=224,
+                        help="Risoluzione di input (default: 224)")
+    parser.add_argument("--no-augmentation", action="store_true",
+                        help="Disattiva l'augmentation di pipeline (consigliato col patch sampling: "
+                             "luminosità/contrasto alterano la qualità percepita senza cambiare il label)")
     parser.add_argument("--save-dir", default="checkpoints")
     parser.add_argument("--smoke-test", action="store_true")
     return parser.parse_args()
 
 
-def build_training_target(model_name):
+def build_training_target(model_name, input_shape=(224, 224, 3)):
     if model_name == "a":
-        return build_model_a(), "model_a", set_trainable
+        return build_model_a(input_shape=input_shape), "model_a", set_trainable
     if model_name == "v2s":
-        return build_model_a(backbone="v2s"), "model_v2s", set_trainable
+        return build_model_a(input_shape=input_shape, backbone="v2s"), "model_v2s", set_trainable
+    if model_name == "bv2s":
+        return build_model_b(input_shape=input_shape, backbone="v2s"), "model_bv2s", set_trainable_b
 
-    return build_model_b(), "model_b", set_trainable_b
+    return build_model_b(input_shape=input_shape), "model_b", set_trainable_b
 
 
 # ---------------------------------------------------------------------------
@@ -319,9 +333,15 @@ if __name__ == '__main__':
     train_ds, val_ds, test_ds = prepare_datasets(
         batch_size=args.batch_size,
         save_csv=True,
+        use_augmentation=not args.no_augmentation,
+        use_patch_sampling=args.patches_per_image > 0,
+        patches_per_image=args.patches_per_image,
+        patch_size=args.patch_size,
+        img_size=args.img_size,
     )
 
-    model, model_name, set_trainable_fn = build_training_target(args.model)
+    model, model_name, set_trainable_fn = build_training_target(
+        args.model, input_shape=(args.img_size, args.img_size, 3))
     model.summary()
 
     if args.smoke_test:
@@ -345,5 +365,6 @@ if __name__ == '__main__':
             patience=args.patience,
             save_dir=args.save_dir,
             set_trainable_fn=set_trainable_fn,
+            phase2b_lr=args.phase2b_lr,
             plcc_weight=args.plcc_weight,
         )

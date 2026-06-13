@@ -67,12 +67,20 @@ def set_trainable(
     n_top_layers: if set, freeze all backbone layers except the last
     n_top_layers — useful for progressive unfreezing (Phase 2a).
     Pass None (default) to unfreeze the entire backbone (Phase 2b).
+
+    Il reset esplicito dei layer figli è necessario: i flag trainable=False
+    messi sui figli in Phase 2a non vengono riazzerati da
+    `backbone.trainable = True`, quindi senza reset la Phase 2b
+    continuerebbe ad allenare solo gli ultimi n_top_layers.
     """
     backbone = _find_backbone(model)
     backbone.trainable = backbone_trainable
-    if backbone_trainable and n_top_layers is not None:
-        for layer in backbone.layers[:-n_top_layers]:
-            layer.trainable = False
+    if backbone_trainable:
+        for layer in backbone.layers:
+            layer.trainable = True
+        if n_top_layers is not None:
+            for layer in backbone.layers[:-n_top_layers]:
+                layer.trainable = False
 
 
 def build_model_a(
@@ -112,52 +120,71 @@ def build_model_a(
     return keras.Model(inputs=inputs, outputs=outputs, name=name)
 
 
-def build_model_b(dropout: float = 0.3) -> keras.Model:
+# Layer di estrazione multiscala per build_model_b: (low /8, mid /16, top /32)
+_MULTISCALE_TAPS = {
+    "b0": ("block3b_add", "block5c_add", "top_activation"),
+    "v2s": ("block3d_add", "block5i_add", "top_activation"),
+}
+
+
+def build_model_b(
+    dropout: float = 0.3,
+    input_shape: tuple = (224, 224, 3),
+    backbone: str = "b0",
+) -> keras.Model:
     """
-    EfficientNetB0 with multi-scale feature extraction via intermediate layers.
+    EfficientNet with multi-scale feature extraction via intermediate layers.
 
-    Features are extracted at three depths of the backbone on a single forward
-    pass, then concatenated before the regression head:
+    backbone: "b0" (default) or "v2s". Features are extracted at three depths
+    of the backbone on a single forward pass, then concatenated before the
+    regression head (taps per backbone in _MULTISCALE_TAPS):
 
-      block3b_add    — 28×28×40   : low-level texture / distortion features
-      block5c_add    — 14×14×112  : mid-level structural features
-      top_activation — 7×7×1280   : high-level semantic features
+      low  (/8)  : low-level texture / distortion features
+      mid  (/16) : mid-level structural features
+      top  (/32) : high-level semantic features
 
-    GAP collapses spatial dims → concatenated vector (B, 1432).
+    GAP collapses spatial dims → concatenated vector.
 
     Replaces the original resize-upsample approach, which fed blurred images
     to a backbone trained on sharp ImageNet inputs and ran three forward
     passes per sample (3× gradient accumulation on the shared weights).
     """
-    inputs = keras.Input(shape=(224, 224, 3), name="image")
+    if backbone not in _BACKBONES:
+        raise ValueError(f"backbone '{backbone}' non supportato: usa {list(_BACKBONES)}")
+    builder, backbone_layer_name = _BACKBONES[backbone]
+    tap_low, tap_mid, tap_top = _MULTISCALE_TAPS[backbone]
 
-    # Multi-output wrapper named "efficientnetb0" so set_trainable() works.
-    _base = keras.applications.EfficientNetB0(
+    inputs = keras.Input(shape=input_shape, name="image")
+
+    # Multi-output wrapper named like the keras.applications model so
+    # set_trainable() / _find_backbone() keep working.
+    _base = builder(
         include_top=False,
         weights="imagenet",
-        input_shape=(224, 224, 3),
+        input_shape=input_shape,
     )
-    backbone = keras.Model(
+    backbone_model = keras.Model(
         inputs=_base.input,
         outputs=[
-            _base.get_layer("block3b_add").output,     # 28×28×40
-            _base.get_layer("block5c_add").output,     # 14×14×112
-            _base.get_layer("top_activation").output,  # 7×7×1280
+            _base.get_layer(tap_low).output,
+            _base.get_layer(tap_mid).output,
+            _base.get_layer(tap_top).output,
         ],
-        name="efficientnetb0",
+        name=backbone_layer_name,
     )
-    backbone.trainable = False   # start frozen — Phase 1
+    backbone_model.trainable = False   # start frozen — Phase 1
 
-    f_low, f_mid, f_top = backbone(inputs, training=False)
+    f_low, f_mid, f_top = backbone_model(inputs, training=False)
 
     gap_low = layers.GlobalAveragePooling2D(name="gap_low")(f_low)    # (B, 40)
     gap_mid = layers.GlobalAveragePooling2D(name="gap_mid")(f_mid)    # (B, 112)
     gap_top = layers.GlobalAveragePooling2D(name="gap_top")(f_top)    # (B, 1280)
 
-    combined = layers.Concatenate(name="multi_scale_features")([gap_low, gap_mid, gap_top])  # (B, 1432)
+    combined = layers.Concatenate(name="multi_scale_features")([gap_low, gap_mid, gap_top])
     outputs = _regression_head(combined, dropout=dropout)
 
-    return keras.Model(inputs=inputs, outputs=outputs, name="ModelB_multiscale")
+    name = "ModelB_multiscale" if backbone == "b0" else f"ModelB_multiscale_{backbone}"
+    return keras.Model(inputs=inputs, outputs=outputs, name=name)
 
 
 def set_trainable_b(

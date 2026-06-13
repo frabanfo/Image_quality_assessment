@@ -11,6 +11,12 @@ from pathlib import Path
 
 os.environ.setdefault("KERAS_HOME", str(Path(__file__).resolve().parents[1] / ".keras"))
 
+# Il modello Swin deve girare sotto tf-keras (Keras 2): sotto Keras 3 il backbone
+# HuggingFace (tf_keras.Model) non viene tracciato, quindi il fine-tuning non
+# toccherebbe il backbone e i checkpoint non ne salverebbero i pesi.
+# Va impostato prima di `import tensorflow`.
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+
 from scipy.stats import pearsonr, spearmanr
 import tensorflow as tf
 from tensorflow import keras
@@ -68,8 +74,26 @@ def parse_args():
     parser.add_argument(
         "--run-eagerly",
         action="store_true",
-        help="Fallback: esegui il training in eager mode (lento) se il "
-             "backbone HF non funziona in graph mode.",
+        help="(default) Esegui il training in eager mode. Mantenuto per "
+             "retrocompatibilità.",
+    )
+    parser.add_argument(
+        "--graph-mode",
+        action="store_true",
+        help="Training sotto tf.function. ROTTO a 224/window7 (BUG-3: errore "
+             "di reshape in window_reverse quando training=True è tracciato), "
+             "ma FUNZIONA a 384/window12 (verificato con swin-base, giugno 12). "
+             "In graph mode tf.function libera le attivazioni degli stage "
+             "congelati: è l'unico modo per allenare swin-base@384 in 8GB.",
+    )
+    parser.add_argument(
+        "--phase2b-top-stages",
+        type=int,
+        default=None,
+        help="Se impostato, limita l'unfreezing della Phase 2b ai top N stage "
+             "dell'encoder invece del backbone completo (es. 2 = stage 2-3). "
+             "Necessario per swin-base@384 su 8GB: il backbone completo va in "
+             "OOM anche a batch 2; gli stage 2-3 sono comunque ~96%% dei parametri.",
     )
     parser.add_argument(
         "--disable-model-augmentation",
@@ -87,6 +111,14 @@ def parse_args():
         type=int,
         default=192,
         help="Patch size in pixels for patch sampling (default: 192).",
+    )
+    parser.add_argument(
+        "--img-size",
+        type=int,
+        default=224,
+        help="Risoluzione di input della pipeline (default: 224). Deve "
+             "combaciare con config.image_size del backbone, altrimenti il "
+             "modello fa un resize interno che vanifica la risoluzione extra.",
     )
     return parser.parse_args()
 
@@ -119,14 +151,15 @@ def main(args):
         use_patch_sampling=args.patches_per_image > 0,
         patches_per_image=args.patches_per_image,
         patch_size=args.patch_size,
+        img_size=args.img_size,
     )
 
     model_vit = build_model_vit(
         backbone_name=args.backbone_name,
         use_model_augmentation=not args.disable_model_augmentation,
-        run_eagerly=args.run_eagerly,
+        run_eagerly=not args.graph_mode,
     )
-    model_vit(tf.zeros((1, 224, 224, 3), dtype=tf.float32), training=True)
+    model_vit(tf.zeros((1, args.img_size, args.img_size, 3), dtype=tf.float32), training=True)
     model_vit.summary()
 
     if args.smoke_test:
@@ -137,6 +170,16 @@ def main(args):
             print("MOS shape   :", mos.shape)
             print("Preds shape :", preds.shape)
         return
+
+    if args.phase2b_top_stages is not None:
+        # La Phase 2b chiama set_trainable_fn senza n_top_layers (= full unfreeze):
+        # qui lo intercettiamo e lo limitiamo ai top N stage per stare in VRAM.
+        def set_trainable_fn(model, backbone_trainable, n_top_layers=None):
+            if backbone_trainable and n_top_layers is None:
+                n_top_layers = args.phase2b_top_stages
+            set_trainable_vit(model, backbone_trainable, n_top_layers=n_top_layers)
+    else:
+        set_trainable_fn = set_trainable_vit
 
     train(
         model=model_vit,
@@ -149,7 +192,7 @@ def main(args):
         phase2_lr=args.phase2_lr,
         patience=args.patience,
         save_dir=args.save_dir,
-        set_trainable_fn=set_trainable_vit,
+        set_trainable_fn=set_trainable_fn,
         phase2a_n_top_layers=2,
         phase2b_lr=args.phase2b_lr,
         make_optimizer=make_swin_optimizer,

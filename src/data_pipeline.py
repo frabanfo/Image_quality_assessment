@@ -114,6 +114,13 @@ def build_image_index(image_dir):
     return image_dir, image_index
         
 
+def set_img_size(size: int) -> None:
+    """Imposta la risoluzione di input. Va chiamata prima di creare i dataset:
+    IMG_SIZE è letto a trace-time dalle funzioni di caricamento."""
+    global IMG_SIZE
+    IMG_SIZE = int(size)
+
+
 def _decode_image(image_path):
     image = tf.io.read_file(image_path)
     image = tf.image.decode_image(image, channels=3, expand_animations=False)
@@ -239,6 +246,7 @@ def prepare_datasets(
     use_patch_sampling: bool = False,
     patches_per_image: int = 4,
     patch_size: int = 192,
+    img_size: int | None = None,
 ):
     """
     Funzione principale.
@@ -251,6 +259,8 @@ def prepare_datasets(
         Splits/val.csv
         Splits/test.csv
     """
+    if img_size is not None:
+        set_img_size(img_size)
 
     # =========================
     # 1. Caricamento file .mat

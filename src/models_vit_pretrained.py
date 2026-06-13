@@ -95,8 +95,9 @@ class PretrainedSwinRegressor(keras.Model):
         self.backbone_name = backbone_name
         self.dropout_rate = dropout
         self.use_model_augmentation = use_model_augmentation
-        # Graph mode di default (5-10x più veloce); run_eagerly=True è il
-        # fallback se il backbone HF non riesce a tracciare sotto tf.function.
+        # Eager mode necessario per il training: il backbone TFSwin
+        # (transformers 4.44) produce un errore di reshape in window_reverse
+        # se il forward con training=True viene tracciato sotto tf.function.
         self.run_eagerly_training = run_eagerly
 
         if TFSwinModel is not None:

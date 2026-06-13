@@ -19,9 +19,20 @@ Examples:
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 os.environ.setdefault("KERAS_HOME", str(Path(__file__).resolve().parents[1] / ".keras"))
+
+# Swin checkpoints are trained and saved under tf-keras (Keras 2, see train_vit.py),
+# whose .weights.h5 layout is incompatible with Keras 3. The env var must be set
+# before `import tensorflow`, hence the argv sniff instead of argparse.
+if any(arg in ("swin", "vit") for arg in sys.argv):
+    os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+
+# Windows console/pipes default to cp1252, which can't encode the box-drawing
+# characters used in the report tables.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import matplotlib
 
@@ -44,19 +55,27 @@ MOS_MAX = 100.0
 # ---------------------------------------------------------------------------
 
 
-def build_or_load_model(model_name: str, checkpoint: str | None = None) -> keras.Model:
+def build_or_load_model(
+    model_name: str,
+    checkpoint: str | None = None,
+    img_size: int = 224,
+    backbone_name: str | None = None,
+) -> keras.Model:
     from src.models import build_model_a, build_model_b
 
+    input_shape = (img_size, img_size, 3)
     if model_name == "a":
-        model = build_model_a()
+        model = build_model_a(input_shape=input_shape)
     elif model_name == "v2s":
-        model = build_model_a(backbone="v2s")
+        model = build_model_a(input_shape=input_shape, backbone="v2s")
     elif model_name == "b":
-        model = build_model_b()
+        model = build_model_b(input_shape=input_shape)
+    elif model_name == "bv2s":
+        model = build_model_b(input_shape=input_shape, backbone="v2s")
     elif model_name in ("swin", "vit"):
-        from src.models_vit_pretrained import build_model_vit
-        model = build_model_vit()
-        model(tf.zeros((1, 224, 224, 3), dtype=tf.float32), training=False)
+        from src.models_vit_pretrained import build_model_vit, DEFAULT_BACKBONE
+        model = build_model_vit(backbone_name=backbone_name or DEFAULT_BACKBONE)
+        model(tf.zeros((1, img_size, img_size, 3), dtype=tf.float32), training=False)
     else:
         raise ValueError(f"Unsupported model '{model_name}'. Use 'a', 'b', 'v2s', or 'swin'.")
 
@@ -261,7 +280,7 @@ def _build_gradcam_model(model: keras.Model, model_type: str) -> keras.Model:
     """
     if model_type in ("a", "v2s"):
         conv_tensor = model.get_layer("gap").input
-    elif model_type == "b":
+    elif model_type in ("b", "bv2s"):
         conv_tensor = model.get_layer("gap_top").input
     else:
         raise ValueError(f"Grad-CAM not supported for model type '{model_type}'")
@@ -298,6 +317,7 @@ def visualize_gradcam(
     test_df: pd.DataFrame,
     save_dir: str,
     n_per_group: int = 2,
+    img_size: int = 224,
 ) -> None:
     """
     Grad-CAM on 4 representative groups:
@@ -339,7 +359,7 @@ def visualize_gradcam(
         for i, (_, row) in enumerate(sample.iterrows()):
             raw = tf.io.read_file(row["image_path"])
             img = tf.image.decode_image(raw, channels=3, expand_animations=False)
-            img = tf.image.resize(img, [224, 224]).numpy()
+            img = tf.image.resize(img, [img_size, img_size]).numpy()
 
             heatmap = _gradcam_heatmap(gradcam_model, img)
             overlay = _overlay_heatmap(img, heatmap)
@@ -369,6 +389,7 @@ def run_evaluation(
     label: str,
     max_batches: int | None = None,
     gradcam: bool = True,
+    img_size: int = 224,
 ) -> dict:
     """
     Run the full evaluation suite and save all plots under output_dir.
@@ -437,7 +458,7 @@ def run_evaluation(
 
     if gradcam:
         print("\nGenerating Grad-CAM visualizations...")
-        visualize_gradcam(model, model_type, test_df, output_dir)
+        visualize_gradcam(model, model_type, test_df, output_dir, img_size=img_size)
 
     return global_metrics
 
@@ -451,9 +472,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate an IQA model on the test split.")
     parser.add_argument(
         "--model",
-        choices=["a", "b", "v2s", "swin"],
+        choices=["a", "b", "v2s", "bv2s", "swin"],
         default="a",
-        help="Architecture: a=baseline CNN, b=multi-scale CNN, v2s=EfficientNetV2-S, swin=Swin-Tiny",
+        help="Architecture: a=baseline CNN, b=multi-scale CNN, v2s=EfficientNetV2-S, "
+             "bv2s=multi-scale V2S, swin=Swin-Tiny",
     )
     parser.add_argument("--checkpoint", default=None,
                         help="Path to .weights.h5 or saved .keras model")
@@ -466,17 +488,33 @@ def parse_args() -> argparse.Namespace:
                         help="Directory containing the split CSVs")
     parser.add_argument("--no-gradcam", action="store_true",
                         help="Skip Grad-CAM visualizations")
+    parser.add_argument("--img-size", type=int, default=224,
+                        help="Risoluzione di input: deve combaciare con quella di training")
+    parser.add_argument("--backbone-name", default=None,
+                        help="Solo per --model swin: nome backbone HuggingFace "
+                             "(es. microsoft/swin-base-patch4-window12-384)")
+    parser.add_argument("--include-val", action="store_true",
+                        help="Evaluate on val+test combined (more stable estimate, "
+                             "slightly optimistic: val was used for model selection)")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    label_map = {"a": "Model A", "b": "Model B", "v2s": "Model A (EfficientNetV2-S)", "swin": "Model Swin-Tiny"}
+    label_map = {"a": "Model A", "b": "Model B", "v2s": "Model A (EfficientNetV2-S)",
+                 "bv2s": "Model B (EfficientNetV2-S multiscale)", "swin": "Model Swin-Tiny"}
     label = label_map.get(args.model, f"Model {args.model.upper()}")
-    output_dir = args.output_dir or os.path.join("results", f"model_{args.model}")
+    if args.model in ("swin", "vit") and args.backbone_name:
+        if "base" in args.backbone_name:
+            label = "Model Swin-Base"
+        elif "tiny" in args.backbone_name:
+            label = "Model Swin-Tiny"
+    suffix = "_valtest" if args.include_val else ""
+    output_dir = args.output_dir or os.path.join("results", f"model_{args.model}{suffix}")
 
     # save_csv=True ensures Splits/test.csv exists for std alignment
-    _, _, test_ds = prepare_datasets(batch_size=args.batch_size, save_csv=True)
+    _, val_ds, test_ds = prepare_datasets(
+        batch_size=args.batch_size, save_csv=True, img_size=args.img_size)
 
     test_csv = os.path.join(args.split_dir, "test.csv")
     if not os.path.exists(test_csv):
@@ -486,7 +524,16 @@ def main() -> None:
         )
     test_df = pd.read_csv(test_csv)
 
-    model = build_or_load_model(args.model, args.checkpoint)
+    if args.include_val:
+        # val_ds and test_ds are both unshuffled and ordered like their CSVs,
+        # so concatenation keeps predictions aligned with the stacked dataframe.
+        val_df = pd.read_csv(os.path.join(args.split_dir, "val.csv"))
+        test_df = pd.concat([val_df, test_df], ignore_index=True)
+        test_ds = val_ds.concatenate(test_ds)
+        label = f"{label} (val+test)"
+
+    model = build_or_load_model(args.model, args.checkpoint, img_size=args.img_size,
+                                backbone_name=args.backbone_name)
 
     run_evaluation(
         model=model,
@@ -497,6 +544,7 @@ def main() -> None:
         label=label,
         max_batches=args.max_batches,
         gradcam=not args.no_gradcam and args.model != "swin",
+        img_size=args.img_size,
     )
 
 

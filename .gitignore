@@ -22,6 +22,8 @@ ENV/
 .claude/
 context/
 .md
+scripts/
+
 
 # Packaging and build outputs
 build/
@@ -109,3 +111,9 @@ desktop.ini
 .idea/
 *.swp
 *.swo
+
+presentation/presentazione.md
+presentation/RISULTATI.md
+presentation/spiegazione.md
+/CLAUDE.md
+/plan.md
