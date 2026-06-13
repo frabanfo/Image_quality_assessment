@@ -1,0 +1,14 @@
+flowchart LR
+  IMG["Input<br/>384×384×3"] --> P["Patch partition<br/>+ Linear embed"]
+  P --> S1["Stage 1<br/>W-MSA + SW-MSA"]
+  S1 --> S2["Stage 2<br/>(patch merging)"]
+  S2 --> S3["Stage 3"]
+  S3 --> S4["Stage 4"]
+  S4 --> POOL["pooler_output"]
+  POOL --> H["Testa di regressione<br/>Dense 256 → 64 → 1 (sigmoid)"]
+  H --> O["MOS ∈ [0,1]"]
+
+  classDef stage fill:#e3d7f5,stroke:#6b4fa5,stroke-width:2px;
+  classDef head fill:#d8f5d0,stroke:#3a8f2a,stroke-width:2px;
+  class S1,S2,S3,S4 stage;
+  class H,O head;

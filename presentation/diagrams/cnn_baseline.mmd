@@ -1,0 +1,13 @@
+flowchart LR
+  IMG["Input<br/>384×384×3"] --> BB["EfficientNetV2-S<br/>(ImageNet)"]
+  BB --> T["top_activation (/32)<br/>solo feature finali"]
+  T --> G["GAP"]
+  G --> H["Testa di regressione<br/>Dense 512 → 256 → 1 (sigmoid)"]
+  H --> O["MOS ∈ [0,1]"]
+
+  classDef bb fill:#cfe3ff,stroke:#3b6ea5,stroke-width:2px;
+  classDef tap fill:#fff2cc,stroke:#cc9a06,stroke-width:1.5px;
+  classDef head fill:#d8f5d0,stroke:#3a8f2a,stroke-width:2px;
+  class BB bb;
+  class T tap;
+  class H,O head;
