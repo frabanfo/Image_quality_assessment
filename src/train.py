@@ -36,6 +36,11 @@ class SRCCCallback(keras.callbacks.Callback):
 
     Serve perché Keras non ha SRCC come metrica built-in e l'EarlyStopping
     ha bisogno di trovare 'val_srcc' nei logs per poter monitorarla.
+
+    Registra anche 'val_loss' (MSE) se non già presente nei logs: permette
+    di omettere validation_data da fit() ed evitare una seconda passata
+    sulla validation, senza sovrascrivere la val_loss di chi la passa
+    ancora (es. train_weighted, dove la loss è pesata).
     """
 
     def __init__(self, val_dataset: tf.data.Dataset):
@@ -52,63 +57,127 @@ class SRCCCallback(keras.callbacks.Callback):
 
         srcc, _ = spearmanr(y_true, y_pred)
         logs['val_srcc'] = float(srcc)
+        if 'val_loss' not in logs:
+            errors = [(t - p) ** 2 for t, p in zip(y_true, y_pred)]
+            logs['val_loss'] = float(sum(errors) / len(errors))
+        print(f" — val_srcc: {logs['val_srcc']:.4f} — val_loss: {logs['val_loss']:.4f}")
 
 
 # ---------------------------------------------------------------------------
 # Fasi di training
 # ---------------------------------------------------------------------------
 
-def _phase1(model, train_ds, val_ds, epochs, lr, set_trainable_fn):
+def _default_optimizer(lr: float) -> keras.optimizers.Optimizer:
+    return keras.optimizers.Adam(learning_rate=lr)
+
+
+def make_iqa_loss(plcc_weight: float = 0.0):
+    """
+    MSE + plcc_weight · (1 − PLCC di batch).
+
+    Il termine di correlazione ottimizza direttamente ciò che il progetto
+    misura (correlazione, non errore assoluto). plcc_weight=0 → MSE pura.
+    Il PLCC per batch è rumoroso con batch piccoli ma resta un segnale
+    utile; con batch da 1 (ultimo batch parziale) il termine degenera a
+    costante e il gradiente viene dal solo MSE.
+    """
+
+    def loss_fn(y_true, y_pred):
+        yt = tf.reshape(tf.cast(y_true, tf.float32), [-1])
+        yp = tf.reshape(tf.cast(y_pred, tf.float32), [-1])
+        loss = tf.reduce_mean(tf.square(yt - yp))
+        if plcc_weight > 0.0:
+            yt_c = yt - tf.reduce_mean(yt)
+            yp_c = yp - tf.reduce_mean(yp)
+            denom = tf.norm(yt_c) * tf.norm(yp_c) + 1e-8
+            plcc = tf.reduce_sum(yt_c * yp_c) / denom
+            loss += plcc_weight * (1.0 - plcc)
+        return loss
+
+    return loss_fn
+
+
+def _log_trainable_params(model, phase_label: str) -> None:
+    """Sanity check: il numero di pesi allenabili deve cambiare tra le fasi."""
+    n_params = sum(int(tf.size(w)) for w in model.trainable_weights)
+    print(f"[{phase_label}] trainable params: {n_params:,}")
+
+
+def _phase1(model, train_ds, val_ds, epochs, lr, set_trainable_fn, make_optimizer, loss_fn):
     """Backbone congelato — allena solo la testa di regressione."""
     set_trainable_fn(model, backbone_trainable=False)
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=lr),
-        loss='mse',
+        optimizer=make_optimizer(lr),
+        loss=loss_fn,
+        run_eagerly=getattr(model, "run_eagerly_training", False),
     )
+    _log_trainable_params(model, "Phase 1")
+    # Niente validation_data: SRCCCallback fa già una passata sulla val
+    # e registra val_srcc + val_loss — evita di valutarla due volte.
     srcc_cb = SRCCCallback(val_ds)
     return model.fit(
         train_ds,
         epochs=epochs,
-        validation_data=val_ds,
         callbacks=[srcc_cb],
         verbose=1,
     )
 
 
-def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_trainable_fn):
+def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_trainable_fn,
+            phase2a_n_top_layers: int = 30, phase2b_lr: float | None = None,
+            make_optimizer=_default_optimizer, loss_fn='mse'):
     """
     Fine-tuning progressivo in due sub-fasi:
 
     2a — sblocca solo i top 30 layer del backbone (ultimi ~2 blocchi),
          LR invariato, niente early stopping. Adatta le feature di alto
-         livello prima di toccare i layer più profondi.
+         livello prima di toccare i layer più profondi. Il checkpoint su
+         val_srcc è attivo anche qui: se 2a overfitta, il best non va perso.
 
-    2b — sblocca l'intero backbone con LR/10, early stopping su val_srcc.
-         LR ridotto per non distruggere le feature di basso livello.
+    2b — sblocca l'intero backbone con LR ridotto (phase2b_lr, default LR/10),
+         early stopping su val_srcc. LR ridotto per non distruggere le
+         feature di basso livello. Il checkpoint riparte dal best di 2a
+         (initial_value_threshold), così un 2b peggiore non lo sovrascrive.
     """
     warmup_epochs = min(max(5, epochs // 4), epochs)
     remaining_epochs = epochs - warmup_epochs
+    if phase2b_lr is None:
+        phase2b_lr = lr / 10
 
-    # ---- Phase 2a: top-30 layer only ----------------------------------------
-    set_trainable_fn(model, backbone_trainable=True, n_top_layers=30)
+    # ---- Phase 2a: top-N layers/stages only ---------------------------------
+    set_trainable_fn(model, backbone_trainable=True, n_top_layers=phase2a_n_top_layers)
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=lr),
-        loss='mse',
+        optimizer=make_optimizer(lr),
+        loss=loss_fn,
+        run_eagerly=getattr(model, "run_eagerly_training", False),
     )
+    _log_trainable_params(model, "Phase 2a")
     h2a = model.fit(
         train_ds,
         epochs=warmup_epochs,
-        validation_data=val_ds,
-        callbacks=[SRCCCallback(val_ds)],
+        callbacks=[
+            SRCCCallback(val_ds),
+            keras.callbacks.ModelCheckpoint(
+                filepath=save_path,
+                monitor='val_srcc',
+                mode='max',
+                save_best_only=True,
+                save_weights_only=True,
+                verbose=1,
+            ),
+        ],
         verbose=1,
     )
+    best_2a_srcc = max(h2a.history.get('val_srcc', [-float('inf')]))
 
     # ---- Phase 2b: full backbone, lower LR, early stopping ------------------
     set_trainable_fn(model, backbone_trainable=True)
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=lr / 10),
-        loss='mse',
+        optimizer=make_optimizer(phase2b_lr),
+        loss=loss_fn,
+        run_eagerly=getattr(model, "run_eagerly_training", False),
     )
+    _log_trainable_params(model, "Phase 2b")
 
     callbacks = [
         SRCCCallback(val_ds),
@@ -125,6 +194,7 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
             mode='max',
             save_best_only=True,
             save_weights_only=True,
+            initial_value_threshold=best_2a_srcc,
             verbose=1,
         ),
         keras.callbacks.ReduceLROnPlateau(
@@ -140,7 +210,6 @@ def _phase2(model, train_ds, val_ds, epochs, lr, patience, save_path, set_traina
     h2b = model.fit(
         train_ds,
         epochs=remaining_epochs,
-        validation_data=val_ds,
         callbacks=callbacks,
         verbose=1,
     )
@@ -163,6 +232,10 @@ def train(
     patience: int = 7,
     save_dir: str = 'checkpoints',
     set_trainable_fn=set_trainable,
+    phase2a_n_top_layers: int = 30,
+    phase2b_lr: float | None = None,
+    make_optimizer=_default_optimizer,
+    plcc_weight: float = 0.0,
 ):
     """
     Pipeline completa di training in 2 fasi.
@@ -175,28 +248,37 @@ def train(
         phase1_epochs   : epoche fase 1 (solo testa)
         phase2_epochs   : epoche massime fase 2 (interrotto da early stopping)
         phase1_lr       : learning rate fase 1
-        phase2_lr       : learning rate fase 2
+        phase2_lr       : learning rate fase 2a
         patience        : epoche senza miglioramento su val_srcc prima dello stop
         save_dir        : cartella dove salvare il modello migliore
         set_trainable_fn: usa set_trainable per ModelA, set_trainable_b per ModelB
+        phase2b_lr      : learning rate fase 2b (default: phase2_lr / 10)
+        make_optimizer  : factory lr -> optimizer (default Adam; AdamW per Swin)
+        plcc_weight     : peso del termine 1−PLCC nella loss (0 = MSE pura)
 
     Returns:
         (history_phase1, history_phase2)
     """
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f"{model_name}_best.weights.h5")
+    loss_fn = make_iqa_loss(plcc_weight)
 
     print(f"\n{'='*55}")
     print(f"  Phase 1 — head only  ({phase1_epochs} epochs, lr={phase1_lr})")
     print(f"{'='*55}")
-    h1 = _phase1(model, train_ds, val_ds, phase1_epochs, phase1_lr, set_trainable_fn)
+    h1 = _phase1(model, train_ds, val_ds, phase1_epochs, phase1_lr, set_trainable_fn,
+                 make_optimizer, loss_fn)
 
     print(f"\n{'='*55}")
     print(f"  Phase 2 — full fine-tuning  (max {phase2_epochs} epochs, lr={phase2_lr})")
     print(f"  Early stopping: patience={patience} su val_srcc")
     print(f"{'='*55}")
     h2a, h2b = _phase2(model, train_ds, val_ds, phase2_epochs, phase2_lr, patience,
-                       save_path, set_trainable_fn)
+                       save_path, set_trainable_fn,
+                       phase2a_n_top_layers=phase2a_n_top_layers,
+                       phase2b_lr=phase2b_lr,
+                       make_optimizer=make_optimizer,
+                       loss_fn=loss_fn)
 
     print(f"\nModello migliore salvato in: {save_path}")
     return h1, h2a, h2b
@@ -204,23 +286,42 @@ def train(
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=["a", "b"], default="a")
+    parser.add_argument("--model", choices=["a", "b", "v2s", "bv2s"], default="a",
+                        help="a=EfficientNetB0, b=B0 multi-scala, v2s=EfficientNetV2-S, "
+                             "bv2s=V2S multi-scala")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--phase1-epochs", type=int, default=5)
     parser.add_argument("--phase2-epochs", type=int, default=30)
     parser.add_argument("--phase1-lr", type=float, default=1e-3)
     parser.add_argument("--phase2-lr", type=float, default=1e-5)
+    parser.add_argument("--phase2b-lr", type=float, default=None,
+                        help="LR per la Phase 2b (default: phase2-lr / 10)")
     parser.add_argument("--patience", type=int, default=7)
+    parser.add_argument("--plcc-weight", type=float, default=0.0,
+                        help="Peso del termine 1−PLCC nella loss (0 = MSE pura)")
+    parser.add_argument("--patches-per-image", type=int, default=0,
+                        help="Patch casuali estratte per immagine (0 = disattivato)")
+    parser.add_argument("--patch-size", type=int, default=192,
+                        help="Lato del patch in pixel (default: 192)")
+    parser.add_argument("--img-size", type=int, default=224,
+                        help="Risoluzione di input (default: 224)")
+    parser.add_argument("--no-augmentation", action="store_true",
+                        help="Disattiva l'augmentation di pipeline (consigliato col patch sampling: "
+                             "luminosità/contrasto alterano la qualità percepita senza cambiare il label)")
     parser.add_argument("--save-dir", default="checkpoints")
     parser.add_argument("--smoke-test", action="store_true")
     return parser.parse_args()
 
 
-def build_training_target(model_name):
+def build_training_target(model_name, input_shape=(224, 224, 3)):
     if model_name == "a":
-        return build_model_a(), "model_a", set_trainable
+        return build_model_a(input_shape=input_shape), "model_a", set_trainable
+    if model_name == "v2s":
+        return build_model_a(input_shape=input_shape, backbone="v2s"), "model_v2s", set_trainable
+    if model_name == "bv2s":
+        return build_model_b(input_shape=input_shape, backbone="v2s"), "model_bv2s", set_trainable_b
 
-    return build_model_b(), "model_b", set_trainable_b
+    return build_model_b(input_shape=input_shape), "model_b", set_trainable_b
 
 
 # ---------------------------------------------------------------------------
@@ -232,9 +333,15 @@ if __name__ == '__main__':
     train_ds, val_ds, test_ds = prepare_datasets(
         batch_size=args.batch_size,
         save_csv=True,
+        use_augmentation=not args.no_augmentation,
+        use_patch_sampling=args.patches_per_image > 0,
+        patches_per_image=args.patches_per_image,
+        patch_size=args.patch_size,
+        img_size=args.img_size,
     )
 
-    model, model_name, set_trainable_fn = build_training_target(args.model)
+    model, model_name, set_trainable_fn = build_training_target(
+        args.model, input_shape=(args.img_size, args.img_size, 3))
     model.summary()
 
     if args.smoke_test:
@@ -258,4 +365,6 @@ if __name__ == '__main__':
             patience=args.patience,
             save_dir=args.save_dir,
             set_trainable_fn=set_trainable_fn,
+            phase2b_lr=args.phase2b_lr,
+            plcc_weight=args.plcc_weight,
         )

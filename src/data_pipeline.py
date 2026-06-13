@@ -114,6 +114,13 @@ def build_image_index(image_dir):
     return image_dir, image_index
         
 
+def set_img_size(size: int) -> None:
+    """Imposta la risoluzione di input. Va chiamata prima di creare i dataset:
+    IMG_SIZE è letto a trace-time dalle funzioni di caricamento."""
+    global IMG_SIZE
+    IMG_SIZE = int(size)
+
+
 def _decode_image(image_path):
     image = tf.io.read_file(image_path)
     image = tf.image.decode_image(image, channels=3, expand_animations=False)
@@ -138,6 +145,19 @@ def load_image_with_std(image_path, mos, std):
     return image, tf.stack([mos_norm, std_norm])
 
 
+def extract_random_patch(image: tf.Tensor, mos: tf.Tensor, patch_size: int = 192):
+    """Crop a random patch from image and resize to 224×224, keeping the MOS label."""
+    h = tf.shape(image)[0]
+    w = tf.shape(image)[1]
+    max_y = tf.maximum(h - patch_size, 0)
+    max_x = tf.maximum(w - patch_size, 0)
+    y = tf.random.uniform((), 0, tf.maximum(max_y, 1), dtype=tf.int32)
+    x = tf.random.uniform((), 0, tf.maximum(max_x, 1), dtype=tf.int32)
+    patch = image[y : y + patch_size, x : x + patch_size, :]
+    patch = tf.image.resize(patch, [IMG_SIZE, IMG_SIZE])
+    return patch, mos
+
+
 def augment(image, mos):
     """
     Augmentation leggera per IQA: solo trasformazioni che non alterano
@@ -152,12 +172,24 @@ def augment(image, mos):
     return image, mos
 
 
-def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False, return_std=False):
+def create_tf_dataset(
+    df,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    return_std=False,
+    use_augmentation=True,
+    use_patch_sampling: bool = False,
+    patches_per_image: int = 4,
+    patch_size: int = 192,
+):
     """
     Converte un DataFrame in tf.data.Dataset.
 
     return_std=False  → emette (image, mos_norm)
     return_std=True   → emette (image, [mos_norm, std_norm]) — per WeightedMSELoss
+
+    use_patch_sampling: if True (and shuffle=True, return_std=False), extract
+    patches_per_image random patches per image via flat_map for augmentation.
     """
     image_paths = df["image_path"].values
     mos_values = df["mos"].values
@@ -180,7 +212,16 @@ def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False, return_std=False
     map_fn = load_image_with_std if return_std else load_image
     dataset = dataset.map(map_fn, num_parallel_calls=tf.data.AUTOTUNE)
 
-    if shuffle:
+    if shuffle and use_patch_sampling and not return_std:
+        _ps = patch_size
+        _n = patches_per_image
+        dataset = dataset.flat_map(
+            lambda img, mos: tf.data.Dataset.from_tensors((img, mos))
+            .repeat(_n)
+            .map(lambda i, m: extract_random_patch(i, m, patch_size=_ps))
+        )
+
+    if shuffle and use_augmentation:
         if return_std:
             dataset = dataset.map(
                 lambda img, y: (augment(img, y[0])[0], y),
@@ -201,6 +242,11 @@ def prepare_datasets(
     save_csv=True,
     split_dir="Splits",
     return_std=False,
+    use_augmentation=True,
+    use_patch_sampling: bool = False,
+    patches_per_image: int = 4,
+    patch_size: int = 192,
+    img_size: int | None = None,
 ):
     """
     Funzione principale.
@@ -213,6 +259,8 @@ def prepare_datasets(
         Splits/val.csv
         Splits/test.csv
     """
+    if img_size is not None:
+        set_img_size(img_size)
 
     # =========================
     # 1. Caricamento file .mat
@@ -364,6 +412,10 @@ def prepare_datasets(
         batch_size=batch_size,
         shuffle=True,
         return_std=return_std,
+        use_augmentation=use_augmentation,
+        use_patch_sampling=use_patch_sampling,
+        patches_per_image=patches_per_image,
+        patch_size=patch_size,
     )
 
     val_ds = create_tf_dataset(
