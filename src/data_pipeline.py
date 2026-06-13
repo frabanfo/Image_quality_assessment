@@ -114,6 +114,13 @@ def build_image_index(image_dir):
     return image_dir, image_index
         
 
+def set_img_size(size: int) -> None:
+    """Imposta la risoluzione di input. Va chiamata prima di creare i dataset:
+    IMG_SIZE è letto a trace-time dalle funzioni di caricamento."""
+    global IMG_SIZE
+    IMG_SIZE = int(size)
+
+
 def _decode_image(image_path):
     image = tf.io.read_file(image_path)
     image = tf.image.decode_image(image, channels=3, expand_animations=False)
@@ -138,6 +145,74 @@ def load_image_with_std(image_path, mos, std):
     return image, tf.stack([mos_norm, std_norm])
 
 
+def _decode_image_native(image_path):
+    """Decodifica senza resize: mantiene la risoluzione nativa per il crop."""
+    image = tf.io.read_file(image_path)
+    image = tf.image.decode_image(image, channels=3, expand_animations=False)
+    image = tf.cast(image, tf.float32)
+    image.set_shape([None, None, 3])
+    return image
+
+
+def load_image_native(image_path, mos):
+    """Immagine a risoluzione nativa in [0,255], MOS in [0,1] (per crop nativi)."""
+    image = _decode_image_native(image_path)
+    mos = (tf.cast(mos, tf.float32) - MOS_MIN) / (MOS_MAX - MOS_MIN)
+    return image, mos
+
+
+def extract_native_patch(image: tf.Tensor, mos: tf.Tensor, crop_frac: float = 0.7):
+    """
+    Crop a una frazione del lato nativo, poi resize a IMG_SIZE. Croppando
+    dall'originale a piena risoluzione (decode senza resize) si preserva il
+    dettaglio ad alta frequenza che un resize precoce distruggerebbe — schema
+    stile DeepBIQ.
+    """
+    h = tf.shape(image)[0]
+    w = tf.shape(image)[1]
+    ch = tf.cast(tf.cast(h, tf.float32) * crop_frac, tf.int32)
+    cw = tf.cast(tf.cast(w, tf.float32) * crop_frac, tf.int32)
+    y = tf.random.uniform((), 0, tf.maximum(h - ch, 1), dtype=tf.int32)
+    x = tf.random.uniform((), 0, tf.maximum(w - cw, 1), dtype=tf.int32)
+    patch = image[y : y + ch, x : x + cw, :]
+    patch = tf.image.resize(patch, [IMG_SIZE, IMG_SIZE])
+    return patch, mos
+
+
+def extract_native_patch_exact(image: tf.Tensor, mos: tf.Tensor):
+    """
+    Crop esatto IMG_SIZE×IMG_SIZE dai pixel nativi — NESSUN resize, quindi
+    nessuna interpolazione (stile DeepBIQ "puro": il crop è già la dimensione
+    di input della rete). A differenza di extract_native_patch, che croppa una
+    frazione del lato e poi riscala (introducendo un lieve upscale).
+
+    Fallback: se l'immagine nativa è più piccola di IMG_SIZE su un lato, si
+    riscala l'intera immagine (caso raro: quasi tutte le foto sono 500×500).
+    """
+    size = IMG_SIZE
+    h = tf.shape(image)[0]
+    w = tf.shape(image)[1]
+
+    def _crop():
+        y = tf.random.uniform((), 0, tf.maximum(h - size, 0) + 1, dtype=tf.int32)
+        x = tf.random.uniform((), 0, tf.maximum(w - size, 0) + 1, dtype=tf.int32)
+        return image[y : y + size, x : x + size, :]
+
+    def _resize():
+        return tf.image.resize(image, [size, size])
+
+    patch = tf.cond(tf.logical_and(h >= size, w >= size), _crop, _resize)
+    patch = tf.ensure_shape(patch, [size, size, 3])
+    return patch, mos
+
+
+def augment_flip(image, mos):
+    """Augmentation IQA-safe: solo flip orizzontale (non altera la qualità
+    percepita, a differenza del jitter fotometrico)."""
+    image = tf.image.random_flip_left_right(image)
+    return image, mos
+
+
 def augment(image, mos):
     """
     Augmentation leggera per IQA: solo trasformazioni che non alterano
@@ -152,12 +227,30 @@ def augment(image, mos):
     return image, mos
 
 
-def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False, return_std=False):
+def create_tf_dataset(
+    df,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    return_std=False,
+    use_augmentation=True,
+    use_patch_sampling: bool = False,
+    patches_per_image: int = 4,
+    patch_crop_frac: float = 0.7,
+    patch_exact: bool = False,
+    flip_only: bool = False,
+):
     """
     Converte un DataFrame in tf.data.Dataset.
 
     return_std=False  → emette (image, mos_norm)
     return_std=True   → emette (image, [mos_norm, std_norm]) — per WeightedMSELoss
+
+    use_patch_sampling: if True (and shuffle=True, return_std=False), extract
+    patches_per_image native crops per image via flat_map (decode senza resize).
+      patch_exact=False → crop a frazione patch_crop_frac del lato + resize a IMG_SIZE.
+      patch_exact=True  → crop esatto IMG_SIZE×IMG_SIZE, nessun resize (DeepBIQ puro).
+    flip_only: se True applica solo il flip orizzontale (augmentation IQA-safe),
+      invece della augment() fotometrica completa.
     """
     image_paths = df["image_path"].values
     mos_values = df["mos"].values
@@ -177,17 +270,43 @@ def create_tf_dataset(df, batch_size=BATCH_SIZE, shuffle=False, return_std=False
             reshuffle_each_iteration=True,
         )
 
-    map_fn = load_image_with_std if return_std else load_image
+    patch_mode = shuffle and use_patch_sampling and not return_std
+    if patch_mode:
+        # Crop nativi: si decodifica senza resize e si croppa dall'originale.
+        map_fn = load_image_native
+    else:
+        map_fn = load_image_with_std if return_std else load_image
     dataset = dataset.map(map_fn, num_parallel_calls=tf.data.AUTOTUNE)
 
-    if shuffle:
+    if patch_mode:
+        _n = patches_per_image
+        _cf = patch_crop_frac
+        if patch_exact:
+            crop_fn = lambda i, m: extract_native_patch_exact(i, m)
+        else:
+            crop_fn = lambda i, m: extract_native_patch(i, m, crop_frac=_cf)
+        dataset = dataset.flat_map(
+            lambda img, mos: tf.data.Dataset.from_tensors((img, mos))
+            .repeat(_n)
+            .map(crop_fn)
+        )
+
+        # Rimescola i patch dopo l'espansione: senza questo un batch contiene
+        # i patch consecutivi di poche immagini (pochi MOS distinti) → il termine
+        # PLCC della loss diventa instabile (varianza ~0 → 0/0 = NaN).
+        dataset = dataset.shuffle(
+            buffer_size=1024, seed=RANDOM_STATE, reshuffle_each_iteration=True
+        )
+
+    if shuffle and (flip_only or use_augmentation):
+        aug_fn = augment_flip if flip_only else augment
         if return_std:
             dataset = dataset.map(
-                lambda img, y: (augment(img, y[0])[0], y),
+                lambda img, y: (aug_fn(img, y[0])[0], y),
                 num_parallel_calls=tf.data.AUTOTUNE,
             )
         else:
-            dataset = dataset.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
+            dataset = dataset.map(aug_fn, num_parallel_calls=tf.data.AUTOTUNE)
 
     dataset = dataset.batch(batch_size)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
@@ -201,6 +320,13 @@ def prepare_datasets(
     save_csv=True,
     split_dir="Splits",
     return_std=False,
+    use_augmentation=True,
+    use_patch_sampling: bool = False,
+    patches_per_image: int = 4,
+    patch_crop_frac: float = 0.7,
+    patch_exact: bool = False,
+    flip_only: bool = False,
+    img_size: int | None = None,
 ):
     """
     Funzione principale.
@@ -213,6 +339,8 @@ def prepare_datasets(
         Splits/val.csv
         Splits/test.csv
     """
+    if img_size is not None:
+        set_img_size(img_size)
 
     # =========================
     # 1. Caricamento file .mat
@@ -364,6 +492,12 @@ def prepare_datasets(
         batch_size=batch_size,
         shuffle=True,
         return_std=return_std,
+        use_augmentation=use_augmentation,
+        use_patch_sampling=use_patch_sampling,
+        patches_per_image=patches_per_image,
+        patch_crop_frac=patch_crop_frac,
+        patch_exact=patch_exact,
+        flip_only=flip_only,
     )
 
     val_ds = create_tf_dataset(
